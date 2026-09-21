@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routers import health, info
+from app.routers import health, info, users
 
 app = FastAPI(
     title="IntelliDocs API",
@@ -8,3 +8,4 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(info.router)
+app.include_router(users.router)

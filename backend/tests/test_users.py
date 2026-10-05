@@ -1,43 +1,27 @@
-from fastapi.testclient import TestClient
-from app.main import app
-
-def test_user_creation_and_retrieval():
-
-    client = TestClient(app)
-    test_user_data = {"name": "test", "email": "test@ex.com"}
-    response = client.post("/api/v1/users", json=test_user_data)
-    
+﻿def test_user_creation_and_retrieval(test_client, user_payload_valid, user_endpoint):
+    response = test_client.post(f"{user_endpoint}/", json=user_payload_valid)
     assert response.status_code == 201
-    assert response.json()["name"] == test_user_data["name"]
-    assert response.json()["email"] == test_user_data["email"]
-    
-    user_id = response.json()["id"]
-    get_response  = client.get(f"/api/v1/users/{user_id}")
-    
-    assert get_response.status_code == 200
-    assert get_response.json()["name"] == test_user_data["name"]
-    assert get_response.json()["email"] == test_user_data["email"]
+    created_user = response.json()
+    assert created_user["name"] == user_payload_valid["name"]
+    assert created_user["email"] == user_payload_valid["email"]
 
-    
-def test_user_creation_same_email():
+    response = test_client.get(f"{user_endpoint}/{created_user['id']}")
+    assert response.status_code == 200
+    assert response.json() == created_user
 
-    client = TestClient(app)
-    test_user_data = {"name": "test", "email": "test@ex.com"}
-    response = client.post("/api/v1/users", json=test_user_data)
-    
+
+def test_user_creation_same_email(test_client, user_payload_valid, user_endpoint):
+    response = test_client.post(f"{user_endpoint}/", json=user_payload_valid)
+    assert response.status_code == 201
+    response = test_client.post(f"{user_endpoint}/", json=user_payload_valid)
     assert response.status_code == 409
-    
-def test_get_nonexistent_user():
-    
-    client = TestClient(app)
-    response = client.get("/api/v1/users/9999")
-    
-    assert response.status_code == 404
 
-def test_user_creation_invalid_email():
 
-    client = TestClient(app)
-    test_user_data = {"name": "test", "email": "invalid-email"}
-    response = client.post("/api/v1/users", json=test_user_data)
-    
+def test_user_creation_invalid_email(test_client, user_payload_invalid, user_endpoint):
+    response = test_client.post(f"{user_endpoint}/", json=user_payload_invalid)
     assert response.status_code == 422
+
+
+def test_get_nonexistent_user(test_client, user_endpoint):
+    response = test_client.get(f"{user_endpoint}/-1")
+    assert response.status_code == 404

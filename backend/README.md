@@ -1,4 +1,4 @@
-﻿# IntelliDocs Backend
+# IntelliDocs Backend
 
 FastAPI backend for IntelliDocs, a document and research workspace under active development. The API provides health and application metadata endpoints plus PostgreSQL-backed user creation and retrieval.
 
@@ -152,57 +152,33 @@ Both request fields are required. An invalid email returns `422`, an already reg
 
 ## Tests
 
-The tests use FastAPI's `TestClient`, so a running Uvicorn server is not required. PostgreSQL must be running, and the target database must have migrations applied. Tests use the application's `DATABASE_URL`; there is no automatic test database override or transaction rollback fixture. A file named `test.env` is not automatically loaded.
-
-Create a dedicated test database using pgAdmin or a PostgreSQL SQL session:
+Run from `backend/` with the virtual environment active. The tests use FastAPI's `TestClient`, so Uvicorn does not need to be running. PostgreSQL must be running with a dedicated test database:
 
 ```sql
-CREATE DATABASE intellidocs_test;
+CREATE DATABASE intellidocs_test_db;
 ```
 
-Point your shell to this database before running Alembic or pytest. Substitute your actual connection details.
+Configure its URL in `backend/.env` or `backend/test.env`:
 
-**Windows PowerShell**
+```dotenv
+TEST_DATABASE_URL=postgresql+psycopg2://YOUR_USER:YOUR_PASSWORD@localhost:5432/intellidocs_test_db
+```
 
-```powershell
-$env:DATABASE_URL = "postgresql+psycopg2://YOUR_USER:YOUR_PASSWORD@localhost:5432/intellidocs_test"
-python -m alembic upgrade head
+Use actual credentials and keep the test database separate from development data. Configuration precedence is the shell's `TEST_DATABASE_URL`, then `backend/test.env`, then `backend/.env`. Only the `TEST_DATABASE_URL` key is read from these files by the fixtures; they do not fall back to the development `DATABASE_URL`. Keep credentials out of committed files (`.env` is ignored by Git).
+
+```sh
 python -m pytest -v
 ```
 
-**macOS / Linux**
+Pytest automatically discovers shared fixtures in `tests/conftest.py`. The fixtures select the test URL before importing the application, check database connectivity, and create missing model tables once per test session. Each test gets its own database session and outer transaction. SQLAlchemy savepoints allow application code to call `commit()` while teardown still rolls back the test's rows. The FastAPI `get_db` dependency is overridden during each client fixture and restored afterward.
+
+The tests cover health and metadata responses, user creation and retrieval, duplicate email rejection, a missing user, and invalid email validation. Each user test creates its own required data, so individual tests and repeat runs work without manually resetting the database:
 
 ```sh
-export DATABASE_URL='postgresql+psycopg2://YOUR_USER:YOUR_PASSWORD@localhost:5432/intellidocs_test'
-python -m alembic upgrade head
-python -m pytest -v
+python -m pytest tests/test_users.py::test_user_creation_same_email -v
 ```
 
-Coverage includes health and metadata responses, user creation and retrieval, duplicate email rejection, a missing user, and invalid email validation.
-
-### Repeat test runs
-
-The current user tests commit `test@ex.com` and do not clean it up. The duplicate-email test depends on the creation test running first, and the missing-user test assumes ID `9999` does not exist. Run the full suite against a fresh test database; isolated or parallel user test runs are not currently independent.
-
-Before repeating the suite, reset the dedicated test database schema. **These commands drop migration-managed tables and their data. Confirm `DATABASE_URL` points to the disposable test database first.**
-
-```sh
-python -m alembic downgrade base
-python -m alembic upgrade head
-python -m pytest -v
-```
-
-After testing, remove the shell override to use `.env` again for newly started commands:
-
-```powershell
-# Windows PowerShell
-Remove-Item Env:DATABASE_URL
-```
-
-```sh
-# macOS / Linux
-unset DATABASE_URL
-```
+Fixtures leave existing rows and table definitions in place. PostgreSQL sequence increments are not rolled back, so generated IDs can have gaps. Table creation uses `Base.metadata.create_all()`; it does not alter existing tables or validate Alembic migration history. Test migrations separately against a fresh database using the migration commands above, with `DATABASE_URL` explicitly pointing to that database.
 
 ## Project structure
 
@@ -222,7 +198,7 @@ backend/
 |   |-- routers/           # Health, metadata, and user endpoints
 |   |-- schemas/           # Pydantic request and response models
 |   `-- services/          # User persistence logic
-|-- tests/                 # pytest API tests
+|-- tests/                 # pytest API tests and shared conftest.py fixtures
 |-- .env                   # Local connection settings (not committed)
 |-- requirements.txt       # Runtime and test dependencies
 `-- README.md

@@ -1,12 +1,14 @@
 # IntelliDocs Backend
 
-FastAPI backend for IntelliDocs, a document and research workspace under active development. The API provides health and application metadata endpoints plus PostgreSQL-backed user creation and retrieval.
+FastAPI backend for IntelliDocs, a document and research workspace under active development. The API provides health and application metadata endpoints plus PostgreSQL-backed registration, password-based login, and authenticated profile retrieval.
 
 ## Tech stack
 
 - **FastAPI and Uvicorn** for the API and development server
 - **Pydantic** for request and response validation, including email validation
 - **PostgreSQL, SQLAlchemy, and psycopg2** for persistent storage and database sessions
+- **pwdlib with Argon2** for password hashing and verification
+- **PyJWT** for signed access tokens and **python-multipart** for login form parsing
 - **Alembic** for database schema migrations
 - **python-dotenv** for loading local environment configuration
 - **pytest and HTTPX** for API tests through FastAPI's `TestClient`
@@ -56,11 +58,19 @@ Create `backend/.env` with your connection details:
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg2://YOUR_USER:YOUR_PASSWORD@localhost:5432/intellidocs
+SECRET_KEY=REPLACE_WITH_A_RANDOM_SECRET
+ALGORITHM=HS256
 ```
 
 Replace the placeholders with your PostgreSQL credentials. URL-encode reserved characters in credentials, such as `@` in a password. The database role needs permission to create and alter tables in the target schema.
 
-`app/core/config.py` loads `.env` and reads `DATABASE_URL`. Both the application and Alembic use this setting. An existing shell environment variable takes precedence over `.env`. The `.env` file is ignored by Git; keep real credentials out of committed files.
+Generate a signing secret locally and copy it into `SECRET_KEY`:
+
+```sh
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+`app/core/config.py` loads `.env` and reads `DATABASE_URL`, `SECRET_KEY`, and `ALGORITHM`. Set all three before using authentication. The signing secret must stay private and consistent across application instances. Both the application and Alembic use `DATABASE_URL`. An existing shell environment variable takes precedence over `.env`. The `.env` file is ignored by Git; keep real credentials out of committed files.
 
 Apply migrations before starting the application:
 
@@ -68,7 +78,7 @@ Apply migrations before starting the application:
 python -m alembic upgrade head
 ```
 
-Alembic creates the tables inside an existing database; it does not create the PostgreSQL database itself. The initial migration creates `users` with an auto-generated bigint ID, required name and unique email, and a creation timestamp default. The application does not automatically create tables at startup.
+Alembic creates the tables inside an existing database; it does not create the PostgreSQL database itself. The initial migration creates `users` with an auto-generated bigint ID, required name and unique email, and a creation timestamp default. The later password migration adds the column that stores password hashes. The application does not automatically create tables at startup.
 
 ### Start the API
 
@@ -118,37 +128,50 @@ Documentation is available while the server is running:
 
 | Method | Endpoint | Description | Success status |
 | --- | --- | --- | --- |
-| `GET` | `/health/` | Returns `{"status": "healthy"}` | `200` |
-| `GET` | `/api/v1/info/` | Returns application name and version | `200` |
-| `POST` | `/api/v1/users/` | Saves a user in PostgreSQL | `201` |
-| `GET` | `/api/v1/users/{user_id}` | Retrieves a saved user by ID | `200` |
+| `GET` | `/health/` | Basic application health check; does not check database connectivity | `200` |
+| `GET` | `/api/v1/info/` | Application name and version | `200` |
+| `POST` | `/auth/register` | Register with a name, email, and password as JSON | `201` |
+| `POST` | `/auth/login` | Verify form credentials and return an access token | `200` |
+| `GET` | `/api/v1/users/me` | Return the profile identified by the bearer token | `200` |
 
-Use the paths shown above to avoid redirects. The health endpoint is a basic application check, not a database connectivity check.
+### Register, login, and retrieve your profile
 
-### Create and retrieve a user
-
-Example using PowerShell:
+Example using PowerShell with demonstration credentials:
 
 ```powershell
 $user = Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:8000/api/v1/users/" `
+  -Uri "http://127.0.0.1:8000/auth/register" `
   -ContentType "application/json" `
-  -Body '{"name":"Alex","email":"alex@example.com"}'
+  -Body '{"name":"Alex","email":"alex@example.com","password":"Example-password-123!"}'
 
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/users/$($user.id)"
+$token = Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/auth/login" `
+  -ContentType "application/x-www-form-urlencoded" `
+  -Body @{ username = "alex@example.com"; password = "Example-password-123!" }
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/v1/users/me" `
+  -Headers @{ Authorization = "Bearer $($token.access_token)" }
 ```
 
-Example response (the database generates the ID):
+Registration accepts JSON. Login accepts form data with fields named `username` and `password`; put the email address in `username`. Login returns:
 
 ```json
 {
-  "id": 1,
-  "name": "Alex",
-  "email": "alex@example.com"
+  "access_token": "<signed JWT>",
+  "token_type": "Bearer"
 }
 ```
 
-Both request fields are required. An invalid email returns `422`, an already registered email returns `409`, and retrieval of a missing user returns `404`. Authentication is not implemented.
+Login tokens expire after 30 minutes. Send `Authorization: Bearer <access_token>` with each protected request. Login does not set a session cookie. Registration and `/me` return only `id`, `name`, and `email`; passwords are hashed with Argon2 before storage and are not included in those responses.
+
+Registration requires all three fields and returns `422` for invalid input or `409` for an already registered email. Login returns `401` for an unknown email or incorrect password. `/me` returns `401` for a missing, invalid, or expired token, or a token whose user no longer exists. Access-token refresh, revocation, and password reset are not implemented.
+
+### Swagger authorization
+
+In `/docs`, register a user, then click **Authorize**. Enter the email in `username` and the password. Swagger calls `/auth/login` and attaches the returned token to protected requests, including `/api/v1/users/me`.
+
+Calling `/auth/login` through **Try it out** displays a token but does not automatically authorize later Swagger requests. Use **Authorize** for that workflow. There is no separate `/auth/token` or `/auth/verify_token` endpoint.
 
 ## Tests
 
@@ -170,40 +193,67 @@ Use actual credentials and keep the test database separate from development data
 python -m pytest -v
 ```
 
-Pytest automatically discovers shared fixtures in `tests/conftest.py`. The fixtures select the test URL before importing the application, check database connectivity, and create missing model tables once per test session. Each test gets its own database session and outer transaction. SQLAlchemy savepoints allow application code to call `commit()` while teardown still rolls back the test's rows. The FastAPI `get_db` dependency is overridden during each client fixture and restored afterward.
+Pytest automatically discovers shared fixtures in `tests/conftest.py`. Before importing the application, fixtures select `TEST_DATABASE_URL` and set a test-only JWT signing key and `HS256` algorithm. Tests do not use the application's real signing secret.
 
-The tests cover health and metadata responses, user creation and retrieval, duplicate email rejection, a missing user, and invalid email validation. Each user test creates its own required data, so individual tests and repeat runs work without manually resetting the database:
+Each test session creates a unique `pytest_<uuid>` PostgreSQL schema and creates current model tables inside it. The database role must have permission to create schemas in the test database. ORM operations use that schema; existing tables and rows are left untouched. Each test receives a separate session and outer transaction, with savepoints allowing application commits to be rolled back. The FastAPI `get_db` dependency override is restored after each test. At session teardown, the temporary schema and its objects are dropped.
+
+The suite covers:
+
+- Health and application metadata responses.
+- Registration, required fields, invalid email, duplicate email, and stored password hashing.
+- Login and authenticated profile retrieval, incorrect passwords, unknown emails, and missing login fields.
+- Profile access with missing, malformed, expired, incorrectly signed tokens, invalid subjects, and unknown users.
+- Profile and registration responses excluding password fields.
+
+Run a focused test or a test module:
 
 ```sh
-python -m pytest tests/test_users.py::test_user_creation_same_email -v
+python -m pytest tests/test_auth.py::test_register_login_and_get_profile -v
+python -m pytest tests/test_users.py -v
 ```
 
-Fixtures leave existing rows and table definitions in place. PostgreSQL sequence increments are not rolled back, so generated IDs can have gaps. Table creation uses `Base.metadata.create_all()`; it does not alter existing tables or validate Alembic migration history. Test migrations separately against a fresh database using the migration commands above, with `DATABASE_URL` explicitly pointing to that database.
+Repeat runs do not require a manual database reset. These are API tests against model-created tables: they do not apply or validate Alembic migrations, and the duplicate-email test does not simulate simultaneous requests. Validate migrations separately against a fresh database with `DATABASE_URL` pointing to it. If pytest is forcibly terminated before teardown, its temporary schema may remain.
 
 ## Project structure
 
 ```text
 backend/
 |-- alembic/
-|   |-- env.py             # Database connection and model metadata for migrations
-|   |-- versions/          # Versioned upgrade and downgrade scripts
-|   `-- script.py.mako     # Migration template
-|-- alembic.ini            # Alembic configuration
+|   |-- env.py                 # Migration connection and model metadata
+|   |-- versions/              # Versioned upgrade and downgrade scripts
+|   `-- script.py.mako         # Migration template
+|-- alembic.ini
 |-- app/
-|   |-- main.py            # FastAPI application and router registration
-|   |-- dependencies.py    # Per-request database session lifecycle
-|   |-- core/config.py     # Load DATABASE_URL from the environment / .env
-|   |-- db/database.py     # SQLAlchemy engine, session factory, and Base
-|   |-- models/user.py     # SQLAlchemy users table definition
-|   |-- routers/           # Health, metadata, and user endpoints
-|   |-- schemas/           # Pydantic request and response models
-|   `-- services/          # User persistence logic
-|-- tests/                 # pytest API tests and shared conftest.py fixtures
-|-- .env                   # Local connection settings (not committed)
-|-- requirements.txt       # Runtime and test dependencies
+|   |-- main.py                # Application and router registration
+|   |-- dependencies.py        # Database session and authenticated-user dependencies
+|   |-- core/
+|   |   |-- config.py          # Database and JWT environment settings
+|   |   |-- security.py        # Password hashing and verification
+|   |   `-- tokens.py          # JWT creation/validation and OAuth2 bearer scheme
+|   |-- db/database.py         # SQLAlchemy engine, session factory, and Base
+|   |-- models/user.py         # Database user model
+|   |-- routers/               # Auth, profile, health, and metadata HTTP endpoints
+|   |-- schemas/
+|   |   |-- auth.py            # Login, token response, and token data schemas
+|   |   |-- users.py           # Registration input and safe profile response
+|   |   `-- info.py            # Application metadata response
+|   `-- services/
+|       |-- auth_service.py    # Registration, credential verification, token issuance
+|       |-- user_service.py    # User insertion and flush; receives a password hash
+|       `-- exceptions.py      # Application errors such as duplicate email
+|-- tests/
+|   |-- conftest.py            # Test configuration, isolated schema, rollback fixtures
+|   |-- test_auth.py           # Registration, login, and full authentication flow
+|   |-- test_users.py          # Protected-profile authentication failures
+|   |-- test_health.py
+|   `-- test_info.py
+|-- .env                       # Local settings (not committed)
+|-- requirements.txt
 `-- README.md
 ```
 
+Routes handle request parsing and HTTP responses. The auth service coordinates password hashing, user creation, and registration commit/rollback; the user service inserts and flushes without committing. Token validation raises token errors, which the authenticated-user dependency translates into HTTP `401` responses.
+
 ## Planned capabilities
 
-Workspaces, document management, search, authentication, and AI-powered document analysis remain planned capabilities.
+Workspaces, document management, search, and AI-powered document analysis remain planned capabilities.

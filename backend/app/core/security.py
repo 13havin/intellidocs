@@ -1,6 +1,9 @@
-from passlib.context import CryptContext
+from pwdlib import PasswordHash
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+password_hash = PasswordHash.recommended()
 
 def hash_password(password: str):
-    return pwd_context.hash(password)
+    return password_hash.hash(password)
+
+def verify_password(plain_password: str, stored_password: str):
+    return password_hash.verify(plain_password, stored_password)

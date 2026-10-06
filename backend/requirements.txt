@@ -7,3 +7,6 @@ sqlmodel
 psycopg2
 alembic
 python-dotenv
+pwdlib[argon2]
+pyjwt
+python-multipart

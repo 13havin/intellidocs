@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
+from sqlalchemy.schema import CreateSchema, DropSchema
 
 # Load test configuration before importing the application's engine or routers.
 backend_dir = Path(__file__).resolve().parents[1]
@@ -17,6 +18,9 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or dotenv_values(
 if not TEST_DATABASE_URL:
     raise pytest.UsageError("Set TEST_DATABASE_URL in the environment, backend/test.env, or backend/.env.")
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+# Test-only signing configuration, independent of local application secrets.
+os.environ["SECRET_KEY"] = "intellidocs-test-signing-key-not-for-production-123456"
+os.environ["ALGORITHM"] = "HS256"
 
 from app.db.database import Base
 from app.dependencies import get_db
@@ -30,17 +34,29 @@ def db_url():
 
 @pytest.fixture(scope="session")
 def db_engine(db_url):
+    """Build model tables in an isolated schema without touching existing tables."""
     engine = create_engine(db_url)
+    schema = f"pytest_{uuid4().hex}"
+    schema_created = False
     try:
         try:
-            with engine.connect():
-                pass
+            with engine.begin() as connection:
+                connection.execute(CreateSchema(schema))
+            schema_created = True
         except OperationalError:
             pytest.fail("Cannot connect to TEST_DATABASE_URL. Check PostgreSQL and test database settings.", pytrace=False)
-        Base.metadata.create_all(bind=engine)
-        yield engine
+
+        test_engine = engine.execution_options(schema_translate_map={None: schema})
+        Base.metadata.create_all(bind=test_engine)
+        yield test_engine
     finally:
-        engine.dispose()
+        try:
+            if schema_created:
+                with engine.begin() as connection:
+                    # This UUID-named schema was created solely for this test run.
+                    connection.execute(DropSchema(schema, cascade=True))
+        finally:
+            engine.dispose()
 
 
 @pytest.fixture
@@ -97,9 +113,20 @@ def expected_info_response():
 
 @pytest.fixture
 def user_payload_valid():
-    return {"name": "test_user", "email": f"test-{uuid4().hex}@example.com"}
+    return {
+        "name": "test_user",
+        "email": f"test-{uuid4().hex}@example.com",
+        "password": "securepassword123"
+    }
 
 
 @pytest.fixture
 def user_payload_invalid():
-    return {"name": "test_user", "email": "testexample.com"}
+    return {"name": "test_user", "email": "testexample.com", "password": "securepassword123"}
+
+
+@pytest.fixture
+def registered_user(test_client, user_payload_valid):
+    response = test_client.post("/auth/register", json=user_payload_valid)
+    assert response.status_code == 201
+    return response.json()

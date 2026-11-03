@@ -3,10 +3,9 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.schemas.users import UserResponse, UserCreate
-from app.schemas.auth import UserLogin
+from app.schemas.auth import UserLogin, UserToken
 from app.services.auth_service import login_user, register_user
 from app.dependencies import get_db
-from app.models.user import User
 from app.services.exceptions import EmailAlreadyExistsError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -15,6 +14,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(), 
     db: Session = Depends(get_db),
+    response_model=UserToken
 ):
     credentials = UserLogin(email=form_data.username, password=form_data.password)
     access_token = login_user(db, credentials)

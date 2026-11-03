@@ -130,7 +130,7 @@ def user_payload_blank_name():
 
 @pytest.fixture
 def user_payload_invalid_password():
-    return {"name": "test_user", "email": "testexample.com", "password": "securepassword123"}
+    return {"name": "test_user", "email": "test@example.com", "password": "securepassword123"}
 
 
 @pytest.fixture

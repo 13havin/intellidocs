@@ -10,11 +10,10 @@ from app.services.exceptions import EmailAlreadyExistsError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-@router.post("/login")
+@router.post("/login", response_model=UserToken, status_code=200)
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(), 
     db: Session = Depends(get_db),
-    response_model=UserToken
 ):
     credentials = UserLogin(email=form_data.username, password=form_data.password)
     access_token = login_user(db, credentials)

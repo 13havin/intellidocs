@@ -56,11 +56,20 @@ def test_registration_rejects_duplicate_email(test_client, registered_user, user
     assert response.json() == {"detail": "Email already registered"}
 
 
-def test_registration_rejects_invalid_email(test_client, user_payload_invalid):
-    response = test_client.post("/auth/register", json=user_payload_invalid)
+def test_registration_rejects_invalid_email(test_client, user_payload_invalid_email):
+    response = test_client.post("/auth/register", json=user_payload_invalid_email)
     assert response.status_code == 422
     assert any(error["loc"] == ["body", "email"] for error in response.json()["detail"])
 
+def test_registration_rejects_invalid_password(test_client, user_payload_invalid_password):
+    response = test_client.post("/auth/register", json=user_payload_invalid_password)
+    assert response.status_code == 422
+    assert any(error["loc"] == ["body", "password"] for error in response.json()["detail"])
+
+def test_registration_rejects_blank_name(test_client, user_payload_blank_name):
+    response = test_client.post("/auth/register", json=user_payload_blank_name)
+    assert response.status_code == 422
+    assert any(error["loc"] == ["body", "name"] for error in response.json()["detail"])
 
 @pytest.mark.parametrize("missing_field", ["name", "email", "password"])
 def test_registration_requires_fields(test_client, user_payload_valid, missing_field):
@@ -70,8 +79,7 @@ def test_registration_requires_fields(test_client, user_payload_valid, missing_f
     assert response.status_code == 422
     assert any(error["loc"] == ["body", missing_field] for error in response.json()["detail"])
 
-
-def test_login_rejects_wrong_password(test_client, registered_user, user_payload_valid):
+def test_login_rejects_wrong_password(test_client, user_payload_valid):
     response = test_client.post("/auth/login", data={
         "username": user_payload_valid["email"], "password": "wrong-password",
     })

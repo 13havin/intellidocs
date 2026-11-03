@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 from jwt import InvalidTokenError
+from pydantic import ValidationError
 
 from app.core.config import SECRET_KEY, ALGORITHM
 from app.schemas.auth import TokenData
@@ -25,7 +26,10 @@ def verify_token(token: str):
         SECRET_KEY, 
         algorithms=[ALGORITHM],
     )
-    email: str = payload.get("sub")
-    if not isinstance(email, str) or not email:
+    user_id: str = payload.get("sub")
+    if not isinstance(user_id, str) or not user_id:
         raise InvalidTokenError("Invalid token: missing subject")
-    return TokenData(email=email)
+    try:
+        return TokenData(id=user_id)
+    except ValidationError as exc:
+        raise InvalidTokenError("Invalid token: invalid user ID") from exc

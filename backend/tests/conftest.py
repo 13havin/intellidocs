@@ -116,12 +116,20 @@ def user_payload_valid():
     return {
         "name": "test_user",
         "email": f"test-{uuid4().hex}@example.com",
-        "password": "securepassword123"
+        "password": "securePassword@123"
     }
 
 
 @pytest.fixture
-def user_payload_invalid():
+def user_payload_invalid_email():
+    return {"name": "test_user", "email": "testexample.com", "password": "securePassword@123"}
+
+@pytest.fixture
+def user_payload_blank_name():
+    return {"name": "", "email": "testexample.com", "password": "securePassword@123"}
+
+@pytest.fixture
+def user_payload_invalid_password():
     return {"name": "test_user", "email": "testexample.com", "password": "securepassword123"}
 
 

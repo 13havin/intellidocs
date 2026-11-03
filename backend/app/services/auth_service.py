@@ -58,6 +58,6 @@ def login_user(db: Session, credentials: UserLogin):
         return None
     
     return create_access_token(
-        data={"sub": user.email},
+        data={"sub": str(user.id)},
         expires_delta=timedelta(minutes=30)
     )

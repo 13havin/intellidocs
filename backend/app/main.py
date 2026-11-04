@@ -1,5 +1,8 @@
 from fastapi import FastAPI
+from app.core import config
 from app.routers import health, info, users, auth
+
+config.validate_env_vars()
 
 app = FastAPI(
     title="IntelliDocs API",

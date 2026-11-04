@@ -1,4 +1,5 @@
 from sqlalchemy import BIGINT, Column, String, VARCHAR, TIMESTAMP, func
+from sqlalchemy.orm import relationship
 from app.db.database import Base
 
 class User(Base):
@@ -8,3 +9,4 @@ class User(Base):
     email = Column(VARCHAR(255), unique=True, nullable=False, index=True)
     password = Column(String, nullable=False)
     created_at = Column(TIMESTAMP, server_default=func.now())
+    workspace_members = relationship("WorkspaceMember", backref="user", cascade="all, delete-orphan")

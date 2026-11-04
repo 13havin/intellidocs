@@ -39,7 +39,8 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['workspace_id'], ['workspaces.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('workspace_id', 'user_id')
+    sa.UniqueConstraint('workspace_id', 'user_id'),
+    sa.CheckConstraint("role IN ('owner', 'editor', 'viewer')", name='ck_workspace_member_role')
     )
     op.create_index(op.f('ix_workspace_members_id'), 'workspace_members', ['id'], unique=False)
     # ### end Alembic commands ###

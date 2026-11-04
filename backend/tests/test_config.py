@@ -17,3 +17,11 @@ def test_secret_key_accepts_valid_key():
 def test_secret_key_rejects_invalid_values(value):
     with pytest.raises(ValueError):
         validate_secret_key(value)
+        
+def test_database_url_accepts_valid_url():
+    validate_database_url("postgresql://postgres:root@localhost:5432/intellidocs_test_db")
+    
+@pytest.mark.parametrize("value", [None, "", " ", "invalid_url", "postgresql://user:pass@localhost:5432", "postgr://user:pass@localhost:5432"])
+def  test_database_url_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        validate_database_url(value)

@@ -72,6 +72,12 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 `app/core/config.py` loads `.env` and reads `DATABASE_URL`, `SECRET_KEY`, and `ALGORITHM`. Set all three before using authentication. The signing secret must stay private and consistent across application instances. Both the application and Alembic use `DATABASE_URL`. An existing shell environment variable takes precedence over `.env`. The `.env` file is ignored by Git; keep real credentials out of committed files.
 
+Configuration requirements:
+
+- `DATABASE_URL` must use `postgresql://` or `postgresql+psycopg2://` and include a host, username, and database name. A valid URL does not guarantee database connectivity.
+- `SECRET_KEY` must contain at least 32 UTF-8 bytes. Use a randomly generated secret, such as the command above produces.
+- `ALGORITHM` must be exactly `HS256`.
+
 Apply migrations before starting the application:
 
 ```sh
@@ -165,13 +171,26 @@ Registration accepts JSON. Login accepts form data with fields named `username` 
 
 Login tokens expire after 30 minutes. Send `Authorization: Bearer <access_token>` with each protected request. Login does not set a session cookie. Registration and `/me` return only `id`, `name`, and `email`; passwords are hashed with Argon2 before storage and are not included in those responses.
 
-Registration requires all three fields and returns `422` for invalid input or `409` for an already registered email. Login returns `401` for an unknown email or incorrect password. `/me` returns `401` for a missing, invalid, or expired token, or a token whose user no longer exists. Access-token refresh, revocation, and password reset are not implemented.
+The JWT `sub` (subject) claim contains the user's database ID as a string. Token validation converts it to an integer, and `/me` retrieves the user by ID. After switching from email-based subjects, log in again to obtain a new token; old email-based tokens are rejected.
+
+Registration requires all three fields: a name that is not empty or whitespace-only, a valid email address, and a password of at least 8 characters containing an uppercase letter, a lowercase letter, and a digit. A special character is not required. Invalid registration input returns `422`; an already registered email returns `409`.
+
+Login returns `401` for an unknown email or incorrect password. `/me` returns `401` for a missing, invalid, or expired token, or a token whose user no longer exists. Access-token refresh, revocation, and password reset are not implemented.
 
 ### Swagger authorization
 
 In `/docs`, register a user, then click **Authorize**. Enter the email in `username` and the password. Swagger calls `/auth/login` and attaches the returned token to protected requests, including `/api/v1/users/me`.
 
 Calling `/auth/login` through **Try it out** displays a token but does not automatically authorize later Swagger requests. Use **Authorize** for that workflow. There is no separate `/auth/token` or `/auth/verify_token` endpoint.
+
+### Troubleshooting bearer-token authentication
+
+For a `401` response from `/api/v1/users/me`, check the response's `detail`:
+
+- `Not authenticated`: the request is missing the `Authorization` header or uses a scheme other than `Bearer`. Send `Authorization: Bearer <access_token>`, or use **Authorize** in Swagger.
+- `Could not verify credentials`: the bearer token failed validation, or its user no longer exists. Log in again and send the newly issued token. Tokens can fail validation because they are malformed, expired, signed with a different key, or contain an invalid subject.
+
+Opening `/me` directly in the browser address bar does not attach the bearer token. Calling login alone does not create a browser session; each protected request must include the header.
 
 ## Tests
 

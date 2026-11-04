@@ -5,7 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import DATABASE_URL
 from app.db.database import Base
-from app.models import user  # Register the users table with Base.metadata.
+from app.models import user, workspaces, workspace_members  # Register the new table with Base.metadata.
 
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))

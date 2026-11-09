@@ -10,7 +10,6 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
 
-from app.core.config import validate_database_url
 
 # Load test configuration before importing the application's engine or routers.
 backend_dir = Path(__file__).resolve().parents[1]
@@ -19,12 +18,16 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or dotenv_values(
 ).get("TEST_DATABASE_URL") or dotenv_values(backend_dir / ".env").get("TEST_DATABASE_URL")
 if not TEST_DATABASE_URL:
     raise pytest.UsageError("Set TEST_DATABASE_URL in the environment, backend/test.env, or backend/.env.")
-validate_database_url(TEST_DATABASE_URL)
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 # Test-only signing configuration, independent of local application secrets.
 os.environ["SECRET_KEY"] = "intellidocs-test-signing-key-not-for-production-123456"
 os.environ["ALGORITHM"] = "HS256"
 
+from app.core.config import validate_database_url
+validate_database_url(TEST_DATABASE_URL)
+
+# Register all related models for isolated database tests.
+from app.models import user, workspaces, workspace_members
 from app.db.database import Base
 from app.dependencies import get_db
 from app.main import app

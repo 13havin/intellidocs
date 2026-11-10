@@ -9,19 +9,11 @@ class WorkspaceCreate(BaseModel):
         if not v or len(v) > 255:
             raise ValueError("Name must contain between 1 and 255 characters")
         return v
-    
+
+class WorkspaceLeave(BaseModel):
+    id: int
 class WorkspaceResponse(BaseModel):
     id: int
     name: str
     created_at: datetime
     updated_at: datetime
-    
-class WorkspaceMemberCreate(BaseModel):
-    user_id: int
-    workspace_id: int
-    role: str
-    
-class WorkspaceMemberResponse(BaseModel):
-    user_id: int
-    role: str
-    joined_at: datetime

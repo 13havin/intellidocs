@@ -1,6 +1,6 @@
 # IntelliDocs Backend
 
-FastAPI backend for IntelliDocs, a document and research workspace under active development. The API provides health and application metadata endpoints plus PostgreSQL-backed registration, password-based login, and authenticated profile retrieval.
+FastAPI backend for IntelliDocs, a document and research workspace under active development. The API provides health and application metadata endpoints plus PostgreSQL-backed registration, password-based login, authenticated profile retrieval, and workspace creation and retrieval.
 
 ## Tech stack
 
@@ -139,6 +139,9 @@ Documentation is available while the server is running:
 | `POST` | `/auth/register` | Register with a name, email, and password as JSON | `201` |
 | `POST` | `/auth/login` | Verify form credentials and return an access token | `200` |
 | `GET` | `/api/v1/users/me` | Return the profile identified by the bearer token | `200` |
+| `POST` | `/api/v1/workspaces/` | Create a workspace from a JSON name and assign the authenticated user as owner | `201` |
+| `GET` | `/api/v1/workspaces/` | List workspaces the authenticated user belongs to | `200` |
+| `GET` | `/api/v1/workspaces/{workspace_id}` | Retrieve a workspace the authenticated user belongs to | `200` |
 
 ### Register, login, and retrieve your profile
 
@@ -176,6 +179,36 @@ The JWT `sub` (subject) claim contains the user's database ID as a string. Token
 Registration requires all three fields: a name that is not empty or whitespace-only, a valid email address, and a password of at least 8 characters containing an uppercase letter, a lowercase letter, and a digit. A special character is not required. Invalid registration input returns `422`; an already registered email returns `409`.
 
 Login returns `401` for an unknown email or incorrect password. `/me` returns `401` for a missing, invalid, or expired token, or a token whose user no longer exists. Access-token refresh, revocation, and password reset are not implemented.
+
+### Workspaces
+
+All workspace endpoints require `Authorization: Bearer <access_token>`. Using the token from the login example above:
+
+```powershell
+$headers = @{ Authorization = "Bearer $($token.access_token)" }
+
+$workspace = Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/workspaces/" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body '{"name":"Research documents"}'
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/v1/workspaces/" `
+  -Headers $headers
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/v1/workspaces/$($workspace.id)" `
+  -Headers $headers
+```
+
+Creation requires a JSON body with a string `name`. Missing, null, non-string, empty, or whitespace-only names return `422`; passing only a query parameter does not satisfy the body requirement. The validator checks for blank names but preserves surrounding whitespace in accepted names.
+
+The creator is taken from the authenticated user and receives the `owner` role automatically. Clients cannot choose another creator or override this role. The workspace and owner membership are committed together; a membership failure rolls back workspace creation.
+
+Create and get responses contain `id`, `name`, `created_at`, and `updated_at`, with timestamps serialized as ISO-formatted strings. Listing returns an array of these objects. Owners, editors, and viewers can retrieve workspaces they belong to; other users cannot access them.
+
+Missing or invalid authentication returns `401`. Listing without any memberships returns `404` with `No workspaces found`. Retrieving a missing workspace or one the user does not belong to returns `404` with `Workspace not found`.
 
 ### Swagger authorization
 
@@ -223,15 +256,19 @@ The suite covers:
 - Login and authenticated profile retrieval, incorrect passwords, unknown emails, and missing login fields.
 - Profile access with missing, malformed, expired, incorrectly signed tokens, invalid subjects, and unknown users.
 - Profile and registration responses excluding password fields.
+- Workspace creation from JSON, required and invalid names, persisted owner membership, and rollback on membership failure.
+- Workspace authentication failures, membership-filtered listing, and retrieval by owners, editors, and viewers.
+- Workspace and membership database constraints against both model-created and Alembic-created tables.
 
 Run a focused test or a test module:
 
 ```sh
 python -m pytest tests/test_auth.py::test_register_login_and_get_profile -v
 python -m pytest tests/test_users.py -v
+python -m pytest tests/test_workspaces.py -v
 ```
 
-Repeat runs do not require a manual database reset. These are API tests against model-created tables: they do not apply or validate Alembic migrations, and the duplicate-email test does not simulate simultaneous requests. Validate migrations separately against a fresh database with `DATABASE_URL` pointing to it. If pytest is forcibly terminated before teardown, its temporary schema may remain.
+Repeat runs do not require a manual database reset. API tests run against model-created tables. The workspace constraint tests also apply the Alembic migration chain in a separate temporary `pytest_migrations_<uuid>` schema and verify constraints there. The duplicate-email test does not simulate simultaneous requests. If pytest is forcibly terminated before teardown, its temporary schemas may remain.
 
 ## Project structure
 
@@ -250,20 +287,24 @@ backend/
 |   |   |-- security.py        # Password hashing and verification
 |   |   `-- tokens.py          # JWT creation/validation and OAuth2 bearer scheme
 |   |-- db/database.py         # SQLAlchemy engine, session factory, and Base
-|   |-- models/user.py         # Database user model
-|   |-- routers/               # Auth, profile, health, and metadata HTTP endpoints
+|   |-- models/                # User, workspace, and workspace membership models
+|   |-- routers/               # Auth, profile, workspace, health, and metadata endpoints
 |   |-- schemas/
 |   |   |-- auth.py            # Login, token response, and token data schemas
 |   |   |-- users.py           # Registration input and safe profile response
+|   |   |-- workspaces.py      # Workspace name validation and response schemas
 |   |   `-- info.py            # Application metadata response
 |   `-- services/
 |       |-- auth_service.py    # Registration, credential verification, token issuance
 |       |-- user_service.py    # User insertion and flush; receives a password hash
+|       |-- workspace_service.py # Workspace creation and membership-filtered queries
 |       `-- exceptions.py      # Application errors such as duplicate email
 |-- tests/
 |   |-- conftest.py            # Test configuration, isolated schema, rollback fixtures
 |   |-- test_auth.py           # Registration, login, and full authentication flow
 |   |-- test_users.py          # Protected-profile authentication failures
+|   |-- test_workspaces.py     # Workspace API validation, access, and persistence
+|   |-- test_workspace_constraints.py # Model and migration database constraints
 |   |-- test_health.py
 |   `-- test_info.py
 |-- .env                       # Local settings (not committed)
@@ -275,4 +316,4 @@ Routes handle request parsing and HTTP responses. The auth service coordinates p
 
 ## Planned capabilities
 
-Workspaces, document management, search, and AI-powered document analysis remain planned capabilities.
+Document management, search, and AI-powered document analysis remain planned capabilities.

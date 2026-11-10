@@ -1,20 +1,33 @@
-from pydantic import BaseModel, field_validator
+from enum import Enum
+from pydantic import BaseModel, field_validator, EmailStr
 from datetime import datetime
 
-class WorkspaceMemberCreate(BaseModel):
-    user_id: int
-    workspace_id: int
-    role: str
+class RoleEnum(str, Enum):
+    owner = "owner"
+    editor = "editor"
+    viewer = "viewer"
     
+class WorkspaceMemberCreate(BaseModel):
+    email: EmailStr
+    role: RoleEnum
+    @field_validator("role")
+    def validate_role(cls, v):
+        if v not in RoleEnum:
+            raise ValueError("Invalid role")
+        return v
 class WorkspaceMemberUpdate(BaseModel):
-    workspace_id: int
-    role: str
+    role: RoleEnum
+    @field_validator("role")
+    def validate_role(cls, v):
+        if v not in RoleEnum:
+            raise ValueError("Invalid role")
+        return v
     
 class WorkspaceMemberDelete(BaseModel):
-    user_id: int
     workspace_id: int
     
 class WorkspaceMemberResponse(BaseModel):
     user_id: int
-    role: str
+    role: RoleEnum
     joined_at: datetime
+    

@@ -97,7 +97,11 @@ def test_create_requires_name(test_client, db_session, workspace_users):
     assert db_session.scalars(select(Workspace)).all() == []
 
 
-@pytest.mark.parametrize("name", ["", "   ", "\t\n", None, 123])
+@pytest.mark.parametrize("name", [
+    "", "   ", "\t\n", None, 123,
+    pytest.param("x" * 256, id="over-length-limit"),
+    pytest.param(" " + "x" * 256 + " ", id="over-length-limit-with-padding"),
+])
 def test_create_rejects_invalid_name(test_client, db_session, workspace_users, name):
     response = test_client.post(
         ENDPOINT, json={"name": name}, headers=auth_headers(workspace_users[0])
@@ -106,6 +110,36 @@ def test_create_rejects_invalid_name(test_client, db_session, workspace_users, n
     assert any(error["loc"] == ["body", "name"] for error in response.json()["detail"])
     assert db_session.scalars(select(Workspace)).all() == []
     assert db_session.scalars(select(WorkspaceMember)).all() == []
+
+
+@pytest.mark.parametrize("name", [
+    pytest.param("x", id="one-character"),
+    pytest.param("x" * 255, id="maximum-length"),
+    pytest.param("é" * 255, id="maximum-length-unicode"),
+])
+def test_create_accepts_name_length_boundaries(test_client, db_session, workspace_users, name):
+    response = test_client.post(
+        ENDPOINT, json={"name": name}, headers=auth_headers(workspace_users[0])
+    )
+    assert response.status_code == 201
+    assert response.json()["name"] == name
+    assert db_session.get(Workspace, response.json()["id"]).name == name
+
+
+@pytest.mark.parametrize("name,expected", [
+    pytest.param(" \t" + "x" * 255 + "\n ", "x" * 255, id="padded-maximum-length"),
+    pytest.param("  Research  documents  ", "Research  documents", id="preserve-internal-spaces"),
+])
+def test_create_stores_trimmed_name(test_client, db_session, workspace_users, name, expected):
+    response = test_client.post(
+        ENDPOINT, json={"name": name}, headers=auth_headers(workspace_users[0])
+    )
+    assert response.status_code == 201
+    assert response.json()["name"] == expected
+    workspace_id = response.json()["id"]
+    db_session.rollback()
+    db_session.expunge_all()
+    assert db_session.get(Workspace, workspace_id).name == expected
 
 
 def test_create_requires_json_body_not_query_name(test_client, db_session, workspace_users):
@@ -136,12 +170,16 @@ def test_list_returns_only_memberships_without_duplicates(test_client, db_sessio
     assert {row["id"] for row in payload} == {owned.id, shared.id}
 
 
-def test_list_without_memberships_returns_404(test_client, db_session, workspace_users):
+@pytest.mark.parametrize("other_workspace_exists", [False, True])
+def test_list_without_memberships_returns_empty_list(
+    test_client, db_session, workspace_users, other_workspace_exists
+):
     user, other = workspace_users
-    workspace_service.create_workspace(db_session, "Someone else's", other.id)
+    if other_workspace_exists:
+        workspace_service.create_workspace(db_session, "Someone else's", other.id)
     response = test_client.get(ENDPOINT, headers=auth_headers(user))
-    assert response.status_code == 404
-    assert response.json() == {"detail": "No workspaces found"}
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 @pytest.mark.parametrize("role", ["owner", "editor", "viewer"])

@@ -5,8 +5,9 @@ class WorkspaceCreate(BaseModel):
     name: str
     @field_validator("name")
     def name_must_not_be_empty(cls, v):
-        if not v.strip():
-            raise ValueError("Name must not be empty")
+        v = v.strip()
+        if not v or len(v) > 255:
+            raise ValueError("Name must contain between 1 and 255 characters")
         return v
     
 class WorkspaceResponse(BaseModel):

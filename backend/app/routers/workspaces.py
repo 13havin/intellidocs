@@ -17,13 +17,10 @@ def create_workspace(payload: WorkspaceCreate, db:Session = Depends(get_db), cur
 
 @router.get("/", response_model=list[WorkspaceResponse], status_code=200)
 def list_workspaces(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    workspaces = workspace_service.list_workspaces(
+    return workspace_service.list_workspaces(
         db,
         user_id=current_user.id
     )
-    if not workspaces:
-        raise HTTPException(status_code=404, detail="No workspaces found")
-    return workspaces
 
 @router.get("/{workspace_id}", response_model=WorkspaceResponse, status_code=200)
 def get_workspace(workspace_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):

@@ -202,13 +202,15 @@ Invoke-RestMethod `
   -Headers $headers
 ```
 
-Creation requires a JSON body with a string `name`. Missing, null, non-string, empty, or whitespace-only names return `422`; passing only a query parameter does not satisfy the body requirement. The validator checks for blank names but preserves surrounding whitespace in accepted names.
+Creation requires a JSON body with a string `name`. Missing, null, non-string, empty, or whitespace-only names return `422`; passing only a query parameter does not satisfy the body requirement. The validator requires 1–255 characters after stripping surrounding whitespace; exactly 255 characters are allowed, and longer trimmed names return `422`.
+
+Names are stored and returned with surrounding whitespace removed; internal spaces are preserved. A padded name with exactly 255 characters after trimming is accepted and stored within the database limit.
 
 The creator is taken from the authenticated user and receives the `owner` role automatically. Clients cannot choose another creator or override this role. The workspace and owner membership are committed together; a membership failure rolls back workspace creation.
 
 Create and get responses contain `id`, `name`, `created_at`, and `updated_at`, with timestamps serialized as ISO-formatted strings. Listing returns an array of these objects. Owners, editors, and viewers can retrieve workspaces they belong to; other users cannot access them.
 
-Missing or invalid authentication returns `401`. Listing without any memberships returns `404` with `No workspaces found`. Retrieving a missing workspace or one the user does not belong to returns `404` with `Workspace not found`.
+Missing or invalid authentication returns `401`. Listing without any memberships returns `200` with an empty array (`[]`), including when other users have workspaces. Retrieving a missing workspace or one the user does not belong to returns `404` with `Workspace not found`.
 
 ### Swagger authorization
 
@@ -256,8 +258,8 @@ The suite covers:
 - Login and authenticated profile retrieval, incorrect passwords, unknown emails, and missing login fields.
 - Profile access with missing, malformed, expired, incorrectly signed tokens, invalid subjects, and unknown users.
 - Profile and registration responses excluding password fields.
-- Workspace creation from JSON, required and invalid names, persisted owner membership, and rollback on membership failure.
-- Workspace authentication failures, membership-filtered listing, and retrieval by owners, editors, and viewers.
+- Workspace creation from JSON, required and invalid names, 1- and 255-character boundaries (including Unicode), rejection of overlong names, persisted owner membership, and rollback on membership failure.
+- Workspace authentication failures, membership-filtered listing, empty lists returning `200`, and retrieval by owners, editors, and viewers.
 - Workspace and membership database constraints against both model-created and Alembic-created tables.
 
 Run a focused test or a test module:

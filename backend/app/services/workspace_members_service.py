@@ -124,11 +124,14 @@ def update_workspace_member_role(db: Session, workspace_id: int, user_id: int, n
 
             if other_owner is None:
                 raise OwnershipRuleViolationError()
+            
+        if member_to_update.role == new_role:
+            return member_to_update  # No change needed
     
         member_to_update.role = new_role
         db.commit()
         
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise
     

@@ -53,7 +53,7 @@ def add_workspace_member(workspace_id: int, payload: WorkspaceMemberCreate, db: 
  
 
 @router.patch("/{workspace_id}/members/{user_id}", response_model=WorkspaceMemberResponse, status_code=200)
-def update_workspace_member_role(workspace_id: int, user_id, payload: WorkspaceMemberUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def update_workspace_member_role(workspace_id: int, user_id: int, payload: WorkspaceMemberUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     # Check if the current user is an owner of the workspace 
     try:
         # Add the new member
@@ -67,13 +67,10 @@ def update_workspace_member_role(workspace_id: int, user_id, payload: WorkspaceM
         raise HTTPException(status_code=404, detail=f"Workspace not found")
     
     except NotOwnerError:
-        raise HTTPException(status_code=403, detail="You do not have permission to add members to this workspace")
+        raise HTTPException(status_code=403, detail="You do not have permission to change member roles in this workspace")
     
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail=f"User is not a member")
     
-    except ExistingMemberError:
-        raise HTTPException(status_code=409, detail=f"Member is already a/an {payload.role}")
-    
     except OwnershipRuleViolationError:
-        raise HTTPException(status_code=403, detail=f"Cannot remove the last owner of the workspace")  
+        raise HTTPException(status_code=409, detail=f"Cannot remove the last owner of the workspace")  

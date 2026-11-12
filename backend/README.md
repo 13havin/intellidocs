@@ -98,13 +98,13 @@ The API runs at <http://127.0.0.1:8000>. The `--reload` option is intended for l
 
 Run migration commands from `backend/`, with `DATABASE_URL` pointing to the intended database.
 
-| Command | Purpose |
-| --- | --- |
-| `python -m alembic current` | Show the database's recorded revision |
-| `python -m alembic history` | Show migration history |
-| `python -m alembic upgrade head` | Apply all pending migrations |
-| `python -m alembic downgrade -1` | Undo the latest applied migration |
-| `python -m alembic check` | Check for model changes requiring a migration |
+| Command                          | Purpose                                       |
+| -------------------------------- | --------------------------------------------- |
+| `python -m alembic current`      | Show the database's recorded revision         |
+| `python -m alembic history`      | Show migration history                        |
+| `python -m alembic upgrade head` | Apply all pending migrations                  |
+| `python -m alembic downgrade -1` | Undo the latest applied migration             |
+| `python -m alembic check`        | Check for model changes requiring a migration |
 
 After changing a SQLAlchemy model:
 
@@ -132,19 +132,19 @@ Documentation is available while the server is running:
 - [ReDoc](http://127.0.0.1:8000/redoc)
 - [OpenAPI schema](http://127.0.0.1:8000/openapi.json)
 
-| Method | Endpoint | Description | Success status |
-| --- | --- | --- | --- |
-| `GET` | `/health/` | Basic application health check; does not check database connectivity | `200` |
-| `GET` | `/api/v1/info/` | Application name and version | `200` |
-| `POST` | `/auth/register` | Register with a name, email, and password as JSON | `201` |
-| `POST` | `/auth/login` | Verify form credentials and return an access token | `200` |
-| `GET` | `/api/v1/users/me` | Return the profile identified by the bearer token | `200` |
-| `POST` | `/api/v1/workspaces/` | Create a workspace from a JSON name and assign the authenticated user as owner | `201` |
-| `GET` | `/api/v1/workspaces/` | List workspaces the authenticated user belongs to | `200` |
-| `GET` | `/api/v1/workspaces/{workspace_id}` | Retrieve a workspace the authenticated user belongs to | `200` |
-| `GET` | `/api/v1/workspaces/{workspace_id}/members` | List members of a workspace the authenticated user belongs to | `200` |
-| `POST` | `/api/v1/workspaces/{workspace_id}/members` | Add a registered user by email; requires workspace owner role | `201` |
-| `PATCH` | `/api/v1/workspaces/{workspace_id}/members/{user_id}` | Change a member's role; requires owner role and preserves the last owner | `200` |
+| Method  | Endpoint                                              | Description                                                                    | Success status |
+| ------- | ----------------------------------------------------- | ------------------------------------------------------------------------------ | -------------- |
+| `GET`   | `/health/`                                            | Basic application health check; does not check database connectivity           | `200`          |
+| `GET`   | `/api/v1/info/`                                       | Application name and version                                                   | `200`          |
+| `POST`  | `/auth/register`                                      | Register with a name, email, and password as JSON                              | `201`          |
+| `POST`  | `/auth/login`                                         | Verify form credentials and return an access token                             | `200`          |
+| `GET`   | `/api/v1/users/me`                                    | Return the profile identified by the bearer token                              | `200`          |
+| `POST`  | `/api/v1/workspaces/`                                 | Create a workspace from a JSON name and assign the authenticated user as owner | `201`          |
+| `GET`   | `/api/v1/workspaces/`                                 | List workspaces the authenticated user belongs to                              | `200`          |
+| `GET`   | `/api/v1/workspaces/{workspace_id}`                   | Retrieve a workspace the authenticated user belongs to                         | `200`          |
+| `GET`   | `/api/v1/workspaces/{workspace_id}/members`           | List members of a workspace the authenticated user belongs to                  | `200`          |
+| `POST`  | `/api/v1/workspaces/{workspace_id}/members`           | Add a registered user by email; requires workspace owner role                  | `201`          |
+| `PATCH` | `/api/v1/workspaces/{workspace_id}/members/{user_id}` | Change a member's role; requires owner role and preserves the last owner       | `200`          |
 
 ### Register, login, and retrieve your profile
 
@@ -235,28 +235,30 @@ Invoke-RestMethod `
 
 Adding returns one object containing `email`, `role`, and `joined_at` (an ISO-formatted timestamp). Listing returns an array of these objects, including the workspace's owners. All three roles can list members of their workspace.
 
-| Condition | Status |
-| --- | --- |
-| Missing or invalid authentication | `401` |
-| Workspace missing or requester is not a member | `404` |
-| Editor or viewer attempts to add a member | `403` |
-| Owner attempts to add an unregistered email | `404` |
-| Owner attempts to add an existing member, including themselves | `409` |
-| Missing email/role, invalid email, or unsupported role | `422` |
+| Condition                                                      | Status |
+| -------------------------------------------------------------- | ------ |
+| Missing or invalid authentication                              | `401`  |
+| Workspace missing or requester is not a member                 | `404`  |
+| Editor or viewer attempts to add a member                      | `403`  |
+| Owner attempts to add an unregistered email                    | `404`  |
+| Owner attempts to add an existing member, including themselves | `409`  |
+| Missing email/role, invalid email, or unsupported role         | `422`  |
 
 For a valid add request, the requester's membership and owner role are checked before looking up the target email. Listing also checks membership before returning member information. Member removal endpoints are not implemented yet.
 
 ### Updating member roles
 
-Owners can change an existing member's role with `PATCH /api/v1/workspaces/{workspace_id}/members/{user_id}` and JSON such as `{"role":"viewer"}`. The path uses the target user's database ID, not the membership row ID. A successful update returns `200` with `email`, `role`, and `joined_at`. Setting the current role again is allowed and returns `200`.
+Owners can change an existing member's role with `PATCH /api/v1/workspaces/{workspace_id}/members/{user_id}` and JSON such as `{"role":"viewer"}`. The path uses the target user's integer database ID, not the membership row ID. A successful update returns `200` with `email`, `role`, and `joined_at`. Setting the current role again returns the existing member with `200`, without issuing an update or committing the session. This applies to owners, editors, and viewers as targets; the requester must still be an owner. Membership timestamps remain unchanged.
 
-The last owner cannot be demoted to editor or viewer: the API returns `403` with `Cannot remove the last owner of the workspace`, and their role remains unchanged. An owner may demote themselves if another owner exists in the same workspace. Owners in other workspaces do not satisfy this rule. The sole owner can still promote or change other members and retain their own owner role.
+The last owner cannot be demoted to editor or viewer: the API returns `409` with `Cannot remove the last owner of the workspace`, and their role remains unchanged. An owner may demote themselves if another owner exists in the same workspace. Owners in other workspaces do not satisfy this rule. The sole owner can still promote or change other members and retain their own owner role.
 
-Missing authentication returns `401`; a missing workspace or requester who is not a member gets `404`; editor/viewer requesters get `403`. A target who is not a workspace member gets `404`. Missing or invalid roles return `422`.
+Missing authentication returns `401`; a missing workspace or requester who is not a member gets `404`. Editor/viewer requesters get `403` with `You do not have permission to change member roles in this workspace`, including when requesting the target's current role. A target who is not a workspace member gets `404`. Demoting the last owner returns `409`. Missing or invalid roles and non-integer user IDs return `422`.
 
 ### Concurrent membership changes
 
 Both the add-member and role-update services lock the workspace row using `SELECT ... FOR UPDATE` before checking permissions and membership. Changes to the same workspace wait for the current transaction; changes to different workspaces do not contend for that workspace row lock. The role-update service checks for another owner while holding this lock, before changing the target role.
+
+A same-role request also acquires the workspace lock, but returns without committing. Its lock remains held until the request's database session closes and ends the transaction. Callers using the service outside the HTTP request lifecycle must end or close their session themselves.
 
 If two owners concurrently demote themselves, one succeeds and the other is rejected as the last remaining owner. An add request waiting behind a role change rechecks its requester's permissions after acquiring the lock; if that requester has been demoted, the add is rejected. Last-owner policy failures roll back and release the lock immediately.
 
@@ -318,7 +320,7 @@ The suite covers:
 - Workspace authentication failures, membership-filtered listing, empty lists returning `200`, and retrieval by owners, editors, and viewers.
 - Workspace and membership database constraints against both model-created and Alembic-created tables.
 - Member listing, owner-only additions, payload validation, duplicate membership, and missing users or workspaces.
-- Role updates, unchanged-role requests, promotions, allowed self-demotion with another owner, and last-owner rejection scoped to the workspace.
+- Role updates, unchanged-role requests issuing no writes or commits, promotions, allowed self-demotion with another owner, and last-owner rejection returning `409` scoped to the workspace.
 - Concurrent self-demotions preserving one owner, additions rechecking permissions after a demotion, and last-owner rejection releasing its lock.
 - Non-members receiving `404`, non-owner members receiving `403` on additions, and complete member response fields.
 - Concurrent additions of the same or different users, write-failure rollback unblocking a waiting request, and permission errors releasing locks before session closure.

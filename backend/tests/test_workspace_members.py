@@ -1,9 +1,10 @@
 from datetime import datetime
 from uuid import uuid4
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.tokens import create_access_token
@@ -61,7 +62,7 @@ def test_last_owner_cannot_demote_self(member_client, db_session, member_context
         f"{endpoint(workspace_id)}/{owner_id}", headers=headers(users["owner"]),
         json={"role": role},
     )
-    assert response.status_code == 403
+    assert response.status_code == 409
     assert response.json() == {"detail": "Cannot remove the last owner of the workspace"}
     db_session.expire_all()
     assert workspace_members_service.get_workspace_member(db_session, workspace_id, owner_id).role == "owner"
@@ -105,13 +106,16 @@ def test_owner_can_demote_self_when_another_owner_exists(member_client, db_sessi
 
 
 @pytest.mark.parametrize("actor,status", [("outsider", 404), ("viewer", 403), ("editor", 403)])
-def test_role_update_rejects_unauthorized_users(member_client, db_session, member_context, actor, status):
+@pytest.mark.parametrize("role", ["owner", "viewer"])
+def test_role_update_rejects_unauthorized_users(member_client, db_session, member_context, actor, status, role):
     workspace, users = member_context
     response = member_client.patch(
         f"{endpoint(workspace.id)}/{users['viewer'].id}",
-        headers=headers(users[actor]), json={"role": "owner"},
+        headers=headers(users[actor]), json={"role": role},
     )
     assert response.status_code == status
+    expected_detail = "Workspace not found" if status == 404 else "You do not have permission to change member roles in this workspace"
+    assert response.json() == {"detail": expected_detail}
     db_session.expire_all()
     assert workspace_members_service.get_workspace_member(db_session, workspace.id, users["viewer"].id).role == "viewer"
 
@@ -142,6 +146,52 @@ def test_role_update_requires_authentication(member_client, member_context):
         f"{endpoint(workspace.id)}/{users['viewer'].id}", json={"role": "owner"},
     )
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize("role", ["owner", "editor", "viewer"])
+def test_same_role_returns_member_without_update_or_commit(
+    member_client, db_session, member_context, monkeypatch, role
+):
+    workspace, users = member_context
+    member = workspace_members_service.get_workspace_member(db_session, workspace.id, users[role].id)
+    before = (member.role, member.joined_at, member.updated_at)
+    commit = Mock(wraps=db_session.commit)
+    monkeypatch.setattr(db_session, "commit", commit)
+    writes = []
+    connection = db_session.connection()
+
+    def record_writes(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().split(None, 1)[0].upper() in {"UPDATE", "INSERT", "DELETE"}:
+            writes.append(statement)
+
+    event.listen(connection, "before_cursor_execute", record_writes)
+    try:
+        response = member_client.patch(
+            f"{endpoint(workspace.id)}/{users[role].id}",
+            headers=headers(users["owner"]), json={"role": role},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "email": users[role].email, "role": role, "joined_at": member.joined_at.isoformat(),
+        }
+        commit.assert_not_called()
+        # A subsequent flush must not reveal a pending change either.
+        db_session.flush()
+        assert writes == []
+        db_session.refresh(member)
+        assert (member.role, member.joined_at, member.updated_at) == before
+    finally:
+        event.remove(connection, "before_cursor_execute", record_writes)
+
+
+def test_role_update_rejects_non_integer_user_id(member_client, member_context):
+    workspace, users = member_context
+    response = member_client.patch(
+        f"{endpoint(workspace.id)}/not-an-id", headers=headers(users["owner"]),
+        json={"role": "viewer"},
+    )
+    assert response.status_code == 422
+    assert any(error["loc"] == ["path", "user_id"] for error in response.json()["detail"])
 
 
 @pytest.mark.parametrize("role", ["owner", "editor", "viewer"])

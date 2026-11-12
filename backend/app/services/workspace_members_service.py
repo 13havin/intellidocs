@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.models.workspaces import Workspace
 from app.models.workspace_members import WorkspaceMember
 from app.schemas.workspace_members import RoleEnum
@@ -6,19 +6,13 @@ from app.services.exceptions import ExistingMemberError, NotFoundError, NotOwner
 from app.models.user import User
 
 def list_workspace_members(db: Session, workspace_id: int, user_id: int) -> list[WorkspaceMember]:
-    
-    try:
-        membership = get_workspace_member(db, workspace_id, user_id)
-        if not membership:
-            raise NotFoundError(f"User {user_id} is not a member of workspace {workspace_id}")
-    except Exception:
-        raise
+    if get_workspace_member(db, workspace_id, user_id) is None:
+        raise NotFoundError()
+
     return (
         db.query(WorkspaceMember)
-        .join(Workspace)
-        .filter(
-            WorkspaceMember.workspace_id == workspace_id,
-        )
+        .options(joinedload(WorkspaceMember.user))
+        .filter(WorkspaceMember.workspace_id == workspace_id)
         .all()
     )
 
@@ -32,27 +26,43 @@ def get_workspace_member(db: Session, workspace_id: int, user_id: int) -> Worksp
         .first()
     )
     
-def add_workspace_member(db: Session, workspace_id: int, email: str, role: RoleEnum, current_user_id: int) -> WorkspaceMember:
-    
+def add_workspace_member(db: Session, workspace_id: int, email: str, role: RoleEnum, current_user_id: int) -> WorkspaceMember: 
     try:
+        workspace = (
+            db.query(Workspace)
+            .filter(Workspace.id == workspace_id)
+            .with_for_update()
+            .first()
+        )
+        if workspace is None:
+            raise NotFoundError()
+        
         membership = get_workspace_member(db, workspace_id, current_user_id)
-        if not membership or membership.role != RoleEnum.owner:
+        if not membership:
+            raise NotFoundError()
+        
+        if membership.role != RoleEnum.owner:
             raise NotOwnerError()
+        
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise UserNotFoundError()
+        
         existing_member = get_workspace_member(db, workspace_id, user.id)
         if existing_member:
             raise ExistingMemberError()
+        
+        new_member = WorkspaceMember(
+            workspace_id=workspace_id,
+            user_id=user.id,
+            role=role
+        )
+        db.add(new_member)
+        db.commit()
+            
     except Exception:
         db.rollback()
         raise
-    new_member = WorkspaceMember(
-        workspace_id=workspace_id,
-        user_id=user.id,
-        role=role
-    )
-    db.add(new_member)
-    db.commit()
+
     db.refresh(new_member)
     return new_member

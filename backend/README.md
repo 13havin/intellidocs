@@ -142,6 +142,8 @@ Documentation is available while the server is running:
 | `POST` | `/api/v1/workspaces/` | Create a workspace from a JSON name and assign the authenticated user as owner | `201` |
 | `GET` | `/api/v1/workspaces/` | List workspaces the authenticated user belongs to | `200` |
 | `GET` | `/api/v1/workspaces/{workspace_id}` | Retrieve a workspace the authenticated user belongs to | `200` |
+| `GET` | `/api/v1/workspaces/{workspace_id}/members` | List members of a workspace the authenticated user belongs to | `200` |
+| `POST` | `/api/v1/workspaces/{workspace_id}/members` | Add a registered user by email; requires workspace owner role | `201` |
 
 ### Register, login, and retrieve your profile
 
@@ -212,6 +214,45 @@ Create and get responses contain `id`, `name`, `created_at`, and `updated_at`, w
 
 Missing or invalid authentication returns `401`. Listing without any memberships returns `200` with an empty array (`[]`), including when other users have workspaces. Retrieving a missing workspace or one the user does not belong to returns `404` with `Workspace not found`.
 
+### Workspace members
+
+Owners can add an existing registered user by email with a role of `owner`, `editor`, or `viewer`. Multiple owners are supported. This adds membership immediately; it does not send an invitation or register a new user.
+
+Using `$headers` and `$workspace` from the workspace example, after registering another user with the email below:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/workspaces/$($workspace.id)/members" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body '{"email":"colleague@example.com","role":"editor"}'
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/v1/workspaces/$($workspace.id)/members" `
+  -Headers $headers
+```
+
+Adding returns one object containing `email`, `role`, and `joined_at` (an ISO-formatted timestamp). Listing returns an array of these objects, including the workspace's owners. All three roles can list members of their workspace.
+
+| Condition | Status |
+| --- | --- |
+| Missing or invalid authentication | `401` |
+| Workspace missing or requester is not a member | `404` |
+| Editor or viewer attempts to add a member | `403` |
+| Owner attempts to add an unregistered email | `404` |
+| Owner attempts to add an existing member, including themselves | `409` |
+| Missing email/role, invalid email, or unsupported role | `422` |
+
+For a valid add request, the requester's membership and owner role are checked before looking up the target email. Listing also checks membership before returning member information. Member role updates and removal endpoints are not implemented yet.
+
+### Concurrent member additions
+
+The add-member service locks the workspace row using `SELECT ... FOR UPDATE` before checking permissions and existing membership. Requests adding members to the same workspace wait for the current transaction; additions to different workspaces do not contend for that workspace row lock.
+
+When two owners add the same person concurrently, one succeeds and the other rechecks membership after acquiring the lock, returning `409`. When they add different people, both can succeed in sequence. The unique `(workspace_id, user_id)` database constraint remains in place.
+
+Commit releases the lock on success. On failure, including permission or lookup errors after locking, the service rolls back to release the lock and re-raises the exception. The router translates expected business errors to HTTP responses. Future membership removal and role-change operations must follow the same workspace-locking convention to coordinate with additions.
+
 ### Swagger authorization
 
 In `/docs`, register a user, then click **Authorize**. Enter the email in `username` and the password. Swagger calls `/auth/login` and attaches the returned token to protected requests, including `/api/v1/users/me`.
@@ -249,7 +290,9 @@ python -m pytest -v
 
 Pytest automatically discovers shared fixtures in `tests/conftest.py`. Before importing the application, fixtures select `TEST_DATABASE_URL` and set a test-only JWT signing key and `HS256` algorithm. Tests do not use the application's real signing secret.
 
-Each test session creates a unique `pytest_<uuid>` PostgreSQL schema and creates current model tables inside it. The database role must have permission to create schemas in the test database. ORM operations use that schema; existing tables and rows are left untouched. Each test receives a separate session and outer transaction, with savepoints allowing application commits to be rolled back. The FastAPI `get_db` dependency override is restored after each test. At session teardown, the temporary schema and its objects are dropped.
+The standard database fixture creates a unique `pytest_<uuid>` PostgreSQL schema and creates current model tables inside it. The database role must have permission to create schemas in the test database. ORM operations use that schema; existing tables and rows are left untouched. Tests using `db_session` receive a separate session and outer transaction, with savepoints allowing application commits to be rolled back. The FastAPI `get_db` dependency override is restored after each test. At session teardown, the temporary schema and its objects are dropped.
+
+Concurrency tests instead create a separate `pytest_concurrency_<uuid>` schema per test and commit setup data so independent connections can see it. Worker threads each own a connection and session. The tests verify actual blocking with PostgreSQL's `pg_blocking_pids()`, use bounded waits, and drop their temporary schema afterward. They exercise service-level concurrency rather than concurrent HTTP requests.
 
 The suite covers:
 
@@ -261,6 +304,9 @@ The suite covers:
 - Workspace creation from JSON, required and invalid names, 1- and 255-character boundaries (including Unicode), rejection of overlong names, persisted owner membership, and rollback on membership failure.
 - Workspace authentication failures, membership-filtered listing, empty lists returning `200`, and retrieval by owners, editors, and viewers.
 - Workspace and membership database constraints against both model-created and Alembic-created tables.
+- Member listing, owner-only additions, payload validation, duplicate membership, and missing users or workspaces.
+- Non-members receiving `404`, non-owner members receiving `403` on additions, and complete member response fields.
+- Concurrent additions of the same or different users, write-failure rollback unblocking a waiting request, and permission errors releasing locks before session closure.
 
 Run a focused test or a test module:
 
@@ -268,6 +314,8 @@ Run a focused test or a test module:
 python -m pytest tests/test_auth.py::test_register_login_and_get_profile -v
 python -m pytest tests/test_users.py -v
 python -m pytest tests/test_workspaces.py -v
+python -m pytest tests/test_workspace_members.py -v
+python -m pytest tests/test_workspace_member_concurrency.py -v
 ```
 
 Repeat runs do not require a manual database reset. API tests run against model-created tables. The workspace constraint tests also apply the Alembic migration chain in a separate temporary `pytest_migrations_<uuid>` schema and verify constraints there. The duplicate-email test does not simulate simultaneous requests. If pytest is forcibly terminated before teardown, its temporary schemas may remain.
@@ -295,11 +343,13 @@ backend/
 |   |   |-- auth.py            # Login, token response, and token data schemas
 |   |   |-- users.py           # Registration input and safe profile response
 |   |   |-- workspaces.py      # Workspace name validation and response schemas
+|   |   |-- workspace_members.py # Member email, role, and response schemas
 |   |   `-- info.py            # Application metadata response
 |   `-- services/
 |       |-- auth_service.py    # Registration, credential verification, token issuance
 |       |-- user_service.py    # User insertion and flush; receives a password hash
 |       |-- workspace_service.py # Workspace creation and membership-filtered queries
+|       |-- workspace_members_service.py # Member access checks and locked additions
 |       `-- exceptions.py      # Application errors such as duplicate email
 |-- tests/
 |   |-- conftest.py            # Test configuration, isolated schema, rollback fixtures
@@ -307,6 +357,8 @@ backend/
 |   |-- test_users.py          # Protected-profile authentication failures
 |   |-- test_workspaces.py     # Workspace API validation, access, and persistence
 |   |-- test_workspace_constraints.py # Model and migration database constraints
+|   |-- test_workspace_members.py # Member API permissions, responses, and validation
+|   |-- test_workspace_member_concurrency.py # PostgreSQL locking across connections
 |   |-- test_health.py
 |   `-- test_info.py
 |-- .env                       # Local settings (not committed)

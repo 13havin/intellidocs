@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.exc import IntegrityError
 from app.models.workspaces import Workspace
 from app.models.workspace_members import WorkspaceMember
 from app.schemas.workspace_members import RoleEnum
@@ -59,7 +60,24 @@ def add_workspace_member(db: Session, workspace_id: int, email: str, role: RoleE
         )
         db.add(new_member)
         db.commit()
-            
+    
+    except IntegrityError as exc:
+        db.rollback()
+        
+        original = exc.orig
+        diagnostics = getattr(original, "diag", None)
+        
+        if (
+            getattr(original, "pgcode", None) == "23505" 
+            and getattr(diagnostics, "table_name", None)
+            == "workspace_members"
+            and getattr(diagnostics, "constraint_name", None)
+            == "workspace_members_workspace_id_user_id_key"
+        ):
+            raise ExistingMemberError() from exc
+
+        raise
+    
     except Exception:
         db.rollback()
         raise

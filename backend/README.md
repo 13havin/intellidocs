@@ -251,7 +251,9 @@ The add-member service locks the workspace row using `SELECT ... FOR UPDATE` bef
 
 When two owners add the same person concurrently, one succeeds and the other rechecks membership after acquiring the lock, returning `409`. When they add different people, both can succeed in sequence. The unique `(workspace_id, user_id)` database constraint remains in place.
 
-Commit releases the lock on success. On failure, including permission or lookup errors after locking, the service rolls back to release the lock and re-raises the exception. The router translates expected business errors to HTTP responses. Future membership removal and role-change operations must follow the same workspace-locking convention to coordinate with additions.
+Commit releases the lock on success. On failure, including permission or lookup errors after locking, the service rolls back to release the lock. If PostgreSQL reports uniqueness error `23505` for table `workspace_members` and constraint `workspace_members_workspace_id_user_id_key`, the service translates that `IntegrityError` into `ExistingMemberError`, preserving the original error as its cause. The router returns `409`, just as it does for duplicates detected by the initial membership check. This is a fallback for writers that bypass the locking convention; the unique constraint remains the final safeguard.
+
+Other database errors, including primary-key, foreign-key, and role-check violations, propagate after rollback rather than being mislabeled as duplicate membership. The constraint name in the handler must match the database constraint; update the handler if a migration renames it. Future membership removal and role-change operations must follow the same workspace-locking convention to coordinate with additions.
 
 ### Swagger authorization
 
@@ -307,6 +309,7 @@ The suite covers:
 - Member listing, owner-only additions, payload validation, duplicate membership, and missing users or workspaces.
 - Non-members receiving `404`, non-owner members receiving `403` on additions, and complete member response fields.
 - Concurrent additions of the same or different users, write-failure rollback unblocking a waiting request, and permission errors releasing locks before session closure.
+- Real PostgreSQL constraint failures injected after the membership pre-check: duplicate membership translates to `ExistingMemberError` and HTTP `409`; unrelated integrity errors propagate, and rollback permits a subsequent successful write.
 
 Run a focused test or a test module:
 

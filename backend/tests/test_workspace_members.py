@@ -4,12 +4,14 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.tokens import create_access_token
 from app.models.user import User
 from app.models.workspace_members import WorkspaceMember
 from app.schemas.workspace_members import RoleEnum
 from app.services import workspace_members_service, workspace_service
+from app.services.exceptions import ExistingMemberError
 
 
 @pytest.fixture
@@ -210,4 +212,91 @@ def test_add_rolls_back_and_reraises_write_failure(db_session, member_context, m
             db_session, workspace_id, email, RoleEnum.viewer, owner_id,
         )
     assert error.value is failure
+    assert membership_ids(db_session) == before
+
+
+def inject_membership_constraint_failure(db, monkeypatch, kind):
+    """Trigger a real database error after the service's membership pre-check."""
+    original_commit = db.commit
+    existing_id = db.scalar(select(WorkspaceMember.id).limit(1))
+    errors = []
+
+    def failing_commit():
+        # One-shot injection so subsequent writes can verify session recovery.
+        monkeypatch.setattr(db, "commit", original_commit)
+        member = next(obj for obj in db.new if isinstance(obj, WorkspaceMember))
+        if kind == "membership_unique":
+            db.add(WorkspaceMember(
+                workspace_id=member.workspace_id, user_id=member.user_id, role=member.role,
+            ))
+        elif kind == "primary_key":
+            member.id = existing_id
+        elif kind == "foreign_key":
+            member.user_id = -1
+        elif kind == "role_check":
+            member.role = "invalid-role"
+        else:
+            raise AssertionError(f"Unknown failure kind: {kind}")
+        try:
+            original_commit()
+        except IntegrityError as exc:
+            errors.append(exc)
+            raise
+
+    monkeypatch.setattr(db, "commit", failing_commit)
+    return errors
+
+
+@pytest.mark.parametrize("kind,sqlstate,expected_error", [
+    ("membership_unique", "23505", ExistingMemberError),
+    ("primary_key", "23505", IntegrityError),
+    ("foreign_key", "23503", IntegrityError),
+    ("role_check", "23514", IntegrityError),
+])
+def test_add_translates_only_membership_unique_violation(
+    db_session, member_context, monkeypatch, kind, sqlstate, expected_error
+):
+    workspace, users = member_context
+    workspace_id, owner_id = workspace.id, users["owner"].id
+    target_id, email = users["target"].id, users["target"].email
+    before = membership_ids(db_session)
+    errors = inject_membership_constraint_failure(db_session, monkeypatch, kind)
+
+    with pytest.raises(expected_error) as caught:
+        workspace_members_service.add_workspace_member(
+            db_session, workspace_id, email, RoleEnum.viewer, owner_id,
+        )
+
+    assert len(errors) == 1
+    assert errors[0].orig.pgcode == sqlstate
+    if kind == "membership_unique":
+        assert caught.value.__cause__ is errors[0]
+        assert errors[0].orig.diag.constraint_name == "workspace_members_workspace_id_user_id_key"
+    else:
+        assert caught.value is errors[0]
+    # Both inserts in the duplicate case must disappear on rollback, and
+    # unrelated errors must also leave a usable session with no partial writes.
+    assert membership_ids(db_session) == before
+    member = workspace_members_service.add_workspace_member(
+        db_session, workspace_id, email, RoleEnum.viewer, owner_id,
+    )
+    assert member.user_id == target_id
+    assert len(membership_ids(db_session)) == len(before) + 1
+
+
+def test_database_duplicate_membership_returns_409(
+    member_client, db_session, member_context, monkeypatch
+):
+    workspace, users = member_context
+    workspace_id, email = workspace.id, users["target"].email
+    auth = headers(users["owner"])
+    before = membership_ids(db_session)
+    errors = inject_membership_constraint_failure(db_session, monkeypatch, "membership_unique")
+
+    response = member_client.post(
+        endpoint(workspace_id), headers=auth, json={"email": email, "role": "viewer"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": f"{email} is already a member of workspace"}
+    assert len(errors) == 1  # Proves the database fallback, not the pre-check, ran.
     assert membership_ids(db_session) == before

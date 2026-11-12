@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.schemas.workspace_members import WorkspaceMemberResponse, WorkspaceMemberCreate, RoleEnum
+from app.schemas.workspace_members import WorkspaceMemberResponse, WorkspaceMemberCreate
 from app.dependencies import get_current_user
 from app.services import workspace_members_service
 from app.dependencies import get_db

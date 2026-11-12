@@ -1,5 +1,5 @@
 from enum import Enum
-from pydantic import BaseModel, field_validator, EmailStr
+from pydantic import BaseModel, EmailStr
 from datetime import datetime
 
 class RoleEnum(str, Enum):
@@ -12,8 +12,6 @@ class WorkspaceMemberCreate(BaseModel):
     role: RoleEnum
 class WorkspaceMemberUpdate(BaseModel):
     role: RoleEnum
-class WorkspaceMemberDelete(BaseModel):
-    workspace_id: int
     
 class WorkspaceMemberResponse(BaseModel):
     email: EmailStr

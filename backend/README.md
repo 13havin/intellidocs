@@ -144,6 +144,7 @@ Documentation is available while the server is running:
 | `GET` | `/api/v1/workspaces/{workspace_id}` | Retrieve a workspace the authenticated user belongs to | `200` |
 | `GET` | `/api/v1/workspaces/{workspace_id}/members` | List members of a workspace the authenticated user belongs to | `200` |
 | `POST` | `/api/v1/workspaces/{workspace_id}/members` | Add a registered user by email; requires workspace owner role | `201` |
+| `PATCH` | `/api/v1/workspaces/{workspace_id}/members/{user_id}` | Change a member's role; requires owner role and preserves the last owner | `200` |
 
 ### Register, login, and retrieve your profile
 
@@ -243,17 +244,27 @@ Adding returns one object containing `email`, `role`, and `joined_at` (an ISO-fo
 | Owner attempts to add an existing member, including themselves | `409` |
 | Missing email/role, invalid email, or unsupported role | `422` |
 
-For a valid add request, the requester's membership and owner role are checked before looking up the target email. Listing also checks membership before returning member information. Member role updates and removal endpoints are not implemented yet.
+For a valid add request, the requester's membership and owner role are checked before looking up the target email. Listing also checks membership before returning member information. Member removal endpoints are not implemented yet.
 
-### Concurrent member additions
+### Updating member roles
 
-The add-member service locks the workspace row using `SELECT ... FOR UPDATE` before checking permissions and existing membership. Requests adding members to the same workspace wait for the current transaction; additions to different workspaces do not contend for that workspace row lock.
+Owners can change an existing member's role with `PATCH /api/v1/workspaces/{workspace_id}/members/{user_id}` and JSON such as `{"role":"viewer"}`. The path uses the target user's database ID, not the membership row ID. A successful update returns `200` with `email`, `role`, and `joined_at`. Setting the current role again is allowed and returns `200`.
+
+The last owner cannot be demoted to editor or viewer: the API returns `403` with `Cannot remove the last owner of the workspace`, and their role remains unchanged. An owner may demote themselves if another owner exists in the same workspace. Owners in other workspaces do not satisfy this rule. The sole owner can still promote or change other members and retain their own owner role.
+
+Missing authentication returns `401`; a missing workspace or requester who is not a member gets `404`; editor/viewer requesters get `403`. A target who is not a workspace member gets `404`. Missing or invalid roles return `422`.
+
+### Concurrent membership changes
+
+Both the add-member and role-update services lock the workspace row using `SELECT ... FOR UPDATE` before checking permissions and membership. Changes to the same workspace wait for the current transaction; changes to different workspaces do not contend for that workspace row lock. The role-update service checks for another owner while holding this lock, before changing the target role.
+
+If two owners concurrently demote themselves, one succeeds and the other is rejected as the last remaining owner. An add request waiting behind a role change rechecks its requester's permissions after acquiring the lock; if that requester has been demoted, the add is rejected. Last-owner policy failures roll back and release the lock immediately.
 
 When two owners add the same person concurrently, one succeeds and the other rechecks membership after acquiring the lock, returning `409`. When they add different people, both can succeed in sequence. The unique `(workspace_id, user_id)` database constraint remains in place.
 
 Commit releases the lock on success. On failure, including permission or lookup errors after locking, the service rolls back to release the lock. If PostgreSQL reports uniqueness error `23505` for table `workspace_members` and constraint `workspace_members_workspace_id_user_id_key`, the service translates that `IntegrityError` into `ExistingMemberError`, preserving the original error as its cause. The router returns `409`, just as it does for duplicates detected by the initial membership check. This is a fallback for writers that bypass the locking convention; the unique constraint remains the final safeguard.
 
-Other database errors, including primary-key, foreign-key, and role-check violations, propagate after rollback rather than being mislabeled as duplicate membership. The constraint name in the handler must match the database constraint; update the handler if a migration renames it. Future membership removal and role-change operations must follow the same workspace-locking convention to coordinate with additions.
+Other database errors, including primary-key, foreign-key, and role-check violations, propagate after rollback rather than being mislabeled as duplicate membership. The constraint name in the handler must match the database constraint; update the handler if a migration renames it. Future membership removal operations must follow the same workspace-locking convention and preserve the last owner. Last-owner protection is enforced by these service methods, not by a database constraint on direct writes.
 
 ### Swagger authorization
 
@@ -307,6 +318,8 @@ The suite covers:
 - Workspace authentication failures, membership-filtered listing, empty lists returning `200`, and retrieval by owners, editors, and viewers.
 - Workspace and membership database constraints against both model-created and Alembic-created tables.
 - Member listing, owner-only additions, payload validation, duplicate membership, and missing users or workspaces.
+- Role updates, unchanged-role requests, promotions, allowed self-demotion with another owner, and last-owner rejection scoped to the workspace.
+- Concurrent self-demotions preserving one owner, additions rechecking permissions after a demotion, and last-owner rejection releasing its lock.
 - Non-members receiving `404`, non-owner members receiving `403` on additions, and complete member response fields.
 - Concurrent additions of the same or different users, write-failure rollback unblocking a waiting request, and permission errors releasing locks before session closure.
 - Real PostgreSQL constraint failures injected after the membership pre-check: duplicate membership translates to `ExistingMemberError` and HTTP `409`; unrelated integrity errors propagate, and rollback permits a subsequent successful write.

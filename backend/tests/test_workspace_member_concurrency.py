@@ -14,8 +14,8 @@ from app.models.user import User
 from app.models.workspaces import Workspace
 from app.models.workspace_members import WorkspaceMember
 from app.schemas.workspace_members import RoleEnum
-from app.services.exceptions import ExistingMemberError, NotFoundError, NotOwnerError
-from app.services.workspace_members_service import add_workspace_member
+from app.services.exceptions import ExistingMemberError, NotFoundError, NotOwnerError, OwnershipRuleViolationError
+from app.services.workspace_members_service import add_workspace_member, update_workspace_member_role
 
 
 @pytest.fixture
@@ -53,6 +53,82 @@ def prepare_connection(connection):
     pid = connection.scalar(text("SELECT pg_backend_pid()"))
     connection.commit()
     return pid
+
+
+@pytest.mark.parametrize("scenario", ["self_demotions", "demoted_owner_adds"])
+def test_role_updates_serialize_and_recheck_ownership(concurrent_context, scenario):
+    engine, workspace_id, users = concurrent_context
+    locked, release, started = Event(), Event(), Event()
+    pids = {}
+
+    def worker(index):
+        with engine.connect() as connection:
+            pids[index] = prepare_connection(connection)
+
+            def pause(conn, cursor, statement, parameters, context, executemany):
+                if "FOR UPDATE" in statement.upper():
+                    locked.set()
+                    assert release.wait(8)
+
+            if index == 0:
+                event.listen(connection, "after_cursor_execute", pause)
+            try:
+                with Session(connection) as db:
+                    if index == 1:
+                        started.set()
+                    try:
+                        if index == 1 and scenario == "demoted_owner_adds":
+                            add_workspace_member(db, workspace_id, users[3][1], RoleEnum.viewer, users[1][0])
+                        else:
+                            target = users[1][0] if scenario == "demoted_owner_adds" else users[index][0]
+                            update_workspace_member_role(db, workspace_id, target, RoleEnum.viewer, users[index][0])
+                        return "success"
+                    except (OwnershipRuleViolationError, NotOwnerError) as exc:
+                        return type(exc)
+            finally:
+                if index == 0:
+                    event.remove(connection, "after_cursor_execute", pause)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(worker, 0)
+        try:
+            assert locked.wait(5)
+            second = pool.submit(worker, 1)
+            assert started.wait(5)
+            wait_for_blocker(engine, pids[1], pids[0], second)
+        finally:
+            release.set()
+        assert first.result(timeout=12) == "success"
+        expected_error = OwnershipRuleViolationError if scenario == "self_demotions" else NotOwnerError
+        assert second.result(timeout=12) is expected_error
+
+    with Session(engine) as db:
+        owners = db.scalars(select(WorkspaceMember.user_id).where(
+            WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.role == "owner",
+        )).all()
+        assert owners == [users[1 if scenario == "self_demotions" else 0][0]]
+        assert db.scalar(select(WorkspaceMember.id).where(
+            WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == users[3][0],
+        )) is None
+
+
+def test_last_owner_rejection_releases_lock(concurrent_context):
+    engine, workspace_id, users = concurrent_context
+    with Session(engine) as setup:
+        update_workspace_member_role(setup, workspace_id, users[1][0], RoleEnum.viewer, users[0][0])
+    with engine.connect() as first, engine.connect() as second:
+        prepare_connection(first)
+        prepare_connection(second)
+        with Session(first) as rejected, Session(second) as following:
+            with pytest.raises(OwnershipRuleViolationError):
+                update_workspace_member_role(rejected, workspace_id, users[0][0], RoleEnum.viewer, users[0][0])
+            # The rejected session stays open, so only rollback can release its lock.
+            following.execute(select(Workspace).where(
+                Workspace.id == workspace_id
+            ).with_for_update(nowait=True)).scalar_one()
+            assert following.scalar(select(WorkspaceMember.role).where(
+                WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == users[0][0],
+            )) == "owner"
 
 
 def wait_for_blocker(engine, waiter_pid, blocker_pid, future):

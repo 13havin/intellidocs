@@ -51,6 +51,99 @@ def membership_ids(db):
     return set(db.scalars(select(WorkspaceMember.id)).all())
 
 
+@pytest.mark.parametrize("role", ["editor", "viewer"])
+def test_last_owner_cannot_demote_self(member_client, db_session, member_context, role):
+    workspace, users = member_context
+    # Owning a different workspace must not satisfy this workspace's policy.
+    workspace_service.create_workspace(db_session, "Other", users["outsider"].id)
+    workspace_id, owner_id = workspace.id, users["owner"].id
+    response = member_client.patch(
+        f"{endpoint(workspace_id)}/{owner_id}", headers=headers(users["owner"]),
+        json={"role": role},
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Cannot remove the last owner of the workspace"}
+    db_session.expire_all()
+    assert workspace_members_service.get_workspace_member(db_session, workspace_id, owner_id).role == "owner"
+
+
+@pytest.mark.parametrize("target,role", [
+    ("owner", "owner"), ("editor", "viewer"), ("viewer", "editor"), ("viewer", "owner"),
+])
+def test_owner_updates_member_role(member_client, db_session, member_context, target, role):
+    workspace, users = member_context
+    workspace_id, target_id, email = workspace.id, users[target].id, users[target].email
+    response = member_client.patch(
+        f"{endpoint(workspace_id)}/{target_id}", headers=headers(users["owner"]), json={"role": role},
+    )
+    assert response.status_code == 200, response.text
+    assert set(response.json()) == {"email", "role", "joined_at"}
+    assert response.json()["email"] == email
+    assert response.json()["role"] == role
+    datetime.fromisoformat(response.json()["joined_at"])
+    db_session.rollback()
+    db_session.expunge_all()
+    assert workspace_members_service.get_workspace_member(db_session, workspace_id, target_id).role == role
+
+
+@pytest.mark.parametrize("role", ["editor", "viewer"])
+def test_owner_can_demote_self_when_another_owner_exists(member_client, db_session, member_context, role):
+    workspace, users = member_context
+    other = workspace_members_service.get_workspace_member(db_session, workspace.id, users["editor"].id)
+    other.role = "owner"
+    db_session.commit()
+    response = member_client.patch(
+        f"{endpoint(workspace.id)}/{users['owner'].id}",
+        headers=headers(users["owner"]), json={"role": role},
+    )
+    assert response.status_code == 200
+    assert response.json()["role"] == role
+    owners = db_session.scalars(select(WorkspaceMember.user_id).where(
+        WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.role == "owner",
+    )).all()
+    assert owners == [users["editor"].id]
+
+
+@pytest.mark.parametrize("actor,status", [("outsider", 404), ("viewer", 403), ("editor", 403)])
+def test_role_update_rejects_unauthorized_users(member_client, db_session, member_context, actor, status):
+    workspace, users = member_context
+    response = member_client.patch(
+        f"{endpoint(workspace.id)}/{users['viewer'].id}",
+        headers=headers(users[actor]), json={"role": "owner"},
+    )
+    assert response.status_code == status
+    db_session.expire_all()
+    assert workspace_members_service.get_workspace_member(db_session, workspace.id, users["viewer"].id).role == "viewer"
+
+
+@pytest.mark.parametrize("missing", ["workspace", "membership"])
+def test_role_update_requires_workspace_and_target_membership(member_client, member_context, missing):
+    workspace, users = member_context
+    response = member_client.patch(
+        f"{endpoint(-1 if missing == 'workspace' else workspace.id)}/{users['outsider'].id}",
+        headers=headers(users["owner"]), json={"role": "viewer"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("payload", [{}, {"role": "admin"}, {"role": None}])
+def test_role_update_validates_payload(member_client, member_context, payload):
+    workspace, users = member_context
+    response = member_client.patch(
+        f"{endpoint(workspace.id)}/{users['viewer'].id}",
+        headers=headers(users["owner"]), json=payload,
+    )
+    assert response.status_code == 422
+
+
+def test_role_update_requires_authentication(member_client, member_context):
+    workspace, users = member_context
+    response = member_client.patch(
+        f"{endpoint(workspace.id)}/{users['viewer'].id}", json={"role": "owner"},
+    )
+    assert response.status_code == 401
+
+
 @pytest.mark.parametrize("role", ["owner", "editor", "viewer"])
 def test_owner_can_add_member(member_client, db_session, member_context, role):
     workspace, users = member_context

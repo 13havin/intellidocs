@@ -11,3 +11,6 @@ class ExistingMemberError(Exception):
 
 class NotOwnerError(Exception):
     pass
+
+class OwnershipRuleViolationError(Exception):
+    pass

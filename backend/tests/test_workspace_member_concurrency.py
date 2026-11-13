@@ -15,7 +15,7 @@ from app.models.workspaces import Workspace
 from app.models.workspace_members import WorkspaceMember
 from app.schemas.workspace_members import RoleEnum
 from app.services.exceptions import ExistingMemberError, NotFoundError, NotOwnerError, OwnershipRuleViolationError
-from app.services.workspace_members_service import add_workspace_member, update_workspace_member_role
+from app.services.workspace_members_service import add_workspace_member, update_workspace_member_role, delete_workspace_member
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def prepare_connection(connection):
     return pid
 
 
-@pytest.mark.parametrize("scenario", ["self_demotions", "demoted_owner_adds"])
+@pytest.mark.parametrize("scenario", ["self_demotions", "demoted_owner_adds", "self_removals"])
 def test_role_updates_serialize_and_recheck_ownership(concurrent_context, scenario):
     engine, workspace_id, users = concurrent_context
     locked, release, started = Event(), Event(), Event()
@@ -77,7 +77,9 @@ def test_role_updates_serialize_and_recheck_ownership(concurrent_context, scenar
                     if index == 1:
                         started.set()
                     try:
-                        if index == 1 and scenario == "demoted_owner_adds":
+                        if scenario == "self_removals":
+                            delete_workspace_member(db, workspace_id, users[index][0], users[index][0])
+                        elif index == 1 and scenario == "demoted_owner_adds":
                             add_workspace_member(db, workspace_id, users[3][1], RoleEnum.viewer, users[1][0])
                         else:
                             target = users[1][0] if scenario == "demoted_owner_adds" else users[index][0]
@@ -99,14 +101,14 @@ def test_role_updates_serialize_and_recheck_ownership(concurrent_context, scenar
         finally:
             release.set()
         assert first.result(timeout=12) == "success"
-        expected_error = OwnershipRuleViolationError if scenario == "self_demotions" else NotOwnerError
+        expected_error = NotOwnerError if scenario == "demoted_owner_adds" else OwnershipRuleViolationError
         assert second.result(timeout=12) is expected_error
 
     with Session(engine) as db:
         owners = db.scalars(select(WorkspaceMember.user_id).where(
             WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.role == "owner",
         )).all()
-        assert owners == [users[1 if scenario == "self_demotions" else 0][0]]
+        assert owners == [users[0 if scenario == "demoted_owner_adds" else 1][0]]
         assert db.scalar(select(WorkspaceMember.id).where(
             WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == users[3][0],
         )) is None

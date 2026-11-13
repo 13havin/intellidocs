@@ -3,7 +3,10 @@ from sqlalchemy.exc import IntegrityError
 from app.models.workspaces import Workspace
 from app.models.workspace_members import WorkspaceMember
 from app.schemas.workspace_members import RoleEnum
-from app.services.exceptions import ExistingMemberError, NotFoundError, NotOwnerError, UserNotFoundError, OwnershipRuleViolationError
+from app.services.exceptions import ( 
+        ExistingMemberError, NotFoundError, NotOwnerError, 
+        UserNotFoundError, OwnershipRuleViolationError, UserNotMemberError
+)
 from app.models.user import User
 
 def list_workspace_members(db: Session, workspace_id: int, user_id: int) -> list[WorkspaceMember]:
@@ -27,23 +30,49 @@ def get_workspace_member(db: Session, workspace_id: int, user_id: int) -> Worksp
         .first()
     )
     
+def get_locked_workspace(db: Session, workspace_id: int) -> Workspace | None:
+    workspace = (
+        db.query(Workspace)
+        .filter(Workspace.id == workspace_id)
+        .with_for_update()
+        .first()
+    )
+    if workspace is None:
+        raise NotFoundError()
+    
+    return workspace
+
+def check_workspace_ownership(db: Session, workspace_id: int, user_id: int) -> WorkspaceMember:
+    membership = get_workspace_member(db, workspace_id, user_id)
+    
+    if membership is None:
+        raise NotFoundError()
+    
+    if membership.role != RoleEnum.owner:
+        raise NotOwnerError()
+    
+    return membership 
+
+def require_another_owner(db: Session, workspace_id: int, user_id: int) -> None:
+    # Check if the current user is the last owner of the workspace
+    other_owner = (
+        db.query(WorkspaceMember)
+        .filter(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.role == RoleEnum.owner,
+            WorkspaceMember.user_id != user_id,
+        )
+        .first()
+    )
+
+    if other_owner is None:
+        raise OwnershipRuleViolationError()
+    
 def add_workspace_member(db: Session, workspace_id: int, email: str, role: RoleEnum, current_user_id: int) -> WorkspaceMember: 
     try:
-        workspace = (
-            db.query(Workspace)
-            .filter(Workspace.id == workspace_id)
-            .with_for_update()
-            .first()
-        )
-        if workspace is None:
-            raise NotFoundError()
+        get_locked_workspace(db, workspace_id)
         
-        membership = get_workspace_member(db, workspace_id, current_user_id)
-        if not membership:
-            raise NotFoundError()
-        
-        if membership.role != RoleEnum.owner:
-            raise NotOwnerError()
+        check_workspace_ownership(db, workspace_id, current_user_id)
         
         user = db.query(User).filter(User.email == email).first()
         if not user:
@@ -87,46 +116,22 @@ def add_workspace_member(db: Session, workspace_id: int, email: str, role: RoleE
 
 def update_workspace_member_role(db: Session, workspace_id: int, user_id: int, new_role: RoleEnum, current_user_id: int) -> WorkspaceMember:
     try:
-        workspace = (
-            db.query(Workspace)
-            .filter(Workspace.id == workspace_id)
-            .with_for_update()
-            .first()
-        )
-        if workspace is None:
-            raise NotFoundError()
+        get_locked_workspace(db, workspace_id)
         
-        membership = get_workspace_member(db, workspace_id, current_user_id)
-        if not membership:
-            raise NotFoundError()
-            
-        if membership.role != RoleEnum.owner:
-            raise NotOwnerError()
+        check_workspace_ownership(db, workspace_id, current_user_id)
         
         member_to_update = get_workspace_member(db, workspace_id, user_id)
         if not member_to_update:
-            raise UserNotFoundError()
+            raise UserNotMemberError()
+        
+        if member_to_update.role == new_role:
+            return member_to_update  # No change needed
         
         if (
             member_to_update.role == RoleEnum.owner
             and new_role != RoleEnum.owner
         ):
-            # Check if the current user is the last owner of the workspace
-            other_owner = (
-                db.query(WorkspaceMember)
-                .filter(
-                    WorkspaceMember.workspace_id == workspace_id,
-                    WorkspaceMember.role == RoleEnum.owner,
-                    WorkspaceMember.user_id != member_to_update.user_id,
-                )
-                .first()
-            )
-
-            if other_owner is None:
-                raise OwnershipRuleViolationError()
-            
-        if member_to_update.role == new_role:
-            return member_to_update  # No change needed
+            require_another_owner(db, workspace_id, member_to_update.user_id)
     
         member_to_update.role = new_role
         db.commit()
@@ -137,3 +142,30 @@ def update_workspace_member_role(db: Session, workspace_id: int, user_id: int, n
     
     db.refresh(member_to_update)
     return member_to_update
+
+def delete_workspace_member(db: Session, workspace_id: int, user_id: int, current_user_id: int) -> None:
+    try:
+        workspace = get_locked_workspace(db, workspace_id)
+                
+        member_to_delete = get_workspace_member(db, workspace_id, user_id)
+        
+        check_workspace_ownership(db, workspace_id, current_user_id)
+
+        if not member_to_delete:
+            raise UserNotMemberError()
+        
+        if (
+            member_to_delete.role == RoleEnum.owner
+            and user_id == current_user_id
+        ):
+            # Check if the current user is the last owner of the workspace
+            require_another_owner(db, workspace_id, member_to_delete.user_id)
+            
+        db.delete(member_to_delete)
+        db.commit()
+    
+    except Exception:
+        db.rollback()
+        raise
+    
+    db.refresh(workspace)

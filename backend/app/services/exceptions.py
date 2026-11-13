@@ -14,3 +14,6 @@ class NotOwnerError(Exception):
 
 class OwnershipRuleViolationError(Exception):
     pass
+
+class UserNotMemberError(Exception):
+    pass

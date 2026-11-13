@@ -52,6 +52,95 @@ def membership_ids(db):
     return set(db.scalars(select(WorkspaceMember.id)).all())
 
 
+@pytest.mark.parametrize("target", ["editor", "viewer", "second_owner"])
+def test_owner_removes_member(member_client, db_session, member_context, target):
+    workspace, users = member_context
+    target_user = users["editor" if target == "second_owner" else target]
+    member = workspace_members_service.get_workspace_member(db_session, workspace.id, target_user.id)
+    if target == "second_owner":
+        member.role = "owner"
+        db_session.commit()
+    workspace_id, target_id = workspace.id, target_user.id
+    before = membership_ids(db_session)
+    removed_id = member.id
+    response = member_client.delete(
+        f"{endpoint(workspace_id)}/{target_id}", headers=headers(users["owner"]),
+    )
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+    db_session.rollback()
+    db_session.expunge_all()
+    assert membership_ids(db_session) == before - {removed_id}
+    assert db_session.get(User, target_id) is not None
+
+
+@pytest.mark.parametrize("use_me", [True, False])
+@pytest.mark.parametrize("another_owner", [True, False])
+def test_owner_self_removal_preserves_last_owner(
+    member_client, db_session, member_context, use_me, another_owner
+):
+    workspace, users = member_context
+    if another_owner:
+        member = workspace_members_service.get_workspace_member(db_session, workspace.id, users["editor"].id)
+        member.role = "owner"
+        db_session.commit()
+    workspace_id, owner_id = workspace.id, users["owner"].id
+    response = member_client.delete(
+        f"{endpoint(workspace_id)}/{'me' if use_me else owner_id}", headers=headers(users["owner"]),
+    )
+    assert response.status_code == (204 if another_owner else 409)
+    if another_owner:
+        assert response.content == b""
+    else:
+        assert response.json() == {"detail": "Cannot remove the last owner of the workspace"}
+    db_session.rollback()
+    db_session.expunge_all()
+    remaining = workspace_members_service.get_workspace_member(db_session, workspace_id, owner_id)
+    assert (remaining is None) == another_owner
+    assert db_session.get(User, owner_id) is not None
+
+
+@pytest.mark.parametrize("actor,status", [("editor", 403), ("viewer", 403), ("outsider", 404)])
+@pytest.mark.parametrize("use_me", [True, False])
+def test_removal_requires_owner(member_client, db_session, member_context, actor, status, use_me):
+    workspace, users = member_context
+    before = membership_ids(db_session)
+    response = member_client.delete(
+        f"{endpoint(workspace.id)}/{'me' if use_me else users['viewer'].id}", headers=headers(users[actor]),
+    )
+    assert response.status_code == status
+    detail = "Workspace not found" if status == 404 else "You do not have permission to perform this action"
+    assert response.json() == {"detail": detail}
+    assert membership_ids(db_session) == before
+
+
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+def test_target_non_member_uses_shared_handler(member_client, db_session, member_context, method):
+    workspace, users = member_context
+    before = membership_ids(db_session)
+    kwargs = {"json": {"role": "viewer"}} if method == "PATCH" else {}
+    response = member_client.request(
+        method, f"{endpoint(workspace.id)}/{users['outsider'].id}", headers=headers(users["owner"]), **kwargs,
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "User is not a member of the workspace"}
+    assert membership_ids(db_session) == before
+
+
+@pytest.mark.parametrize("suffix", ["me", "-1"])
+def test_removal_requires_authentication(member_client, member_context, suffix):
+    workspace, _ = member_context
+    response = member_client.delete(f"{endpoint(workspace.id)}/{suffix}")
+    assert response.status_code == 401
+
+
+def test_removal_missing_workspace(member_client, member_context):
+    _, users = member_context
+    response = member_client.delete(f"{endpoint(-1)}/me", headers=headers(users["owner"]))
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Workspace not found"}
+
+
 @pytest.mark.parametrize("role", ["editor", "viewer"])
 def test_last_owner_cannot_demote_self(member_client, db_session, member_context, role):
     workspace, users = member_context
@@ -114,7 +203,7 @@ def test_role_update_rejects_unauthorized_users(member_client, db_session, membe
         headers=headers(users[actor]), json={"role": role},
     )
     assert response.status_code == status
-    expected_detail = "Workspace not found" if status == 404 else "You do not have permission to change member roles in this workspace"
+    expected_detail = "Workspace not found" if status == 404 else "You do not have permission to perform this action"
     assert response.json() == {"detail": expected_detail}
     db_session.expire_all()
     assert workspace_members_service.get_workspace_member(db_session, workspace.id, users["viewer"].id).role == "viewer"
@@ -230,7 +319,7 @@ def test_add_checks_requester_before_target_lookup(
         json={"email": email, "role": "viewer"},
     )
     assert response.status_code == status
-    detail = "Workspace not found" if status == 404 else "You do not have permission to add members to this workspace"
+    detail = "Workspace not found" if status == 404 else "You do not have permission to perform this action"
     assert response.json() == {"detail": detail}
     assert membership_ids(db_session) == before
 

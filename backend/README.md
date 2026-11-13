@@ -244,7 +244,26 @@ Adding returns one object containing `email`, `role`, and `joined_at` (an ISO-fo
 | Owner attempts to add an existing member, including themselves | `409`  |
 | Missing email/role, invalid email, or unsupported role         | `422`  |
 
-For a valid add request, the requester's membership and owner role are checked before looking up the target email. Listing also checks membership before returning member information. Member removal endpoints are not implemented yet.
+For a valid add request, the requester's membership and owner role are checked before looking up the target email. Listing also checks membership before returning member information.
+
+### Removing members
+
+`DELETE /api/v1/workspaces/{workspace_id}/members/{user_id}` removes a membership. `DELETE /api/v1/workspaces/{workspace_id}/members/me` removes the authenticated user's own membership. Both return `204` with no response body on success and preserve the user account and workspace.
+
+Both endpoints currently require the requester to be an owner. Editors and viewers cannot remove other members or leave using `/members/me`; they receive `403`. An owner can remove another member, including another owner, or leave if another owner remains. Removing the last owner is rejected with `409`. Concurrent owner self-removals are serialized so one owner remains.
+
+### Shared membership errors
+
+Application-level handlers registered in `main.py` translate these service exceptions consistently:
+
+| Exception | Status | Detail |
+| --- | --- | --- |
+| `NotFoundError` | `404` | `Workspace not found` |
+| `NotOwnerError` | `403` | `You do not have permission to perform this action` |
+| `UserNotMemberError` | `404` | `User is not a member of the workspace` |
+| `OwnershipRuleViolationError` | `409` | `Cannot remove the last owner of the workspace` |
+
+An inaccessible workspace also produces `NotFoundError`. The add-member router still handles `UserNotFoundError` and `ExistingMemberError` locally to include the target email. Shared service helpers perform locking and ownership checks; transaction commit/rollback stays in the calling service method.
 
 ### Updating member roles
 
@@ -252,11 +271,11 @@ Owners can change an existing member's role with `PATCH /api/v1/workspaces/{work
 
 The last owner cannot be demoted to editor or viewer: the API returns `409` with `Cannot remove the last owner of the workspace`, and their role remains unchanged. An owner may demote themselves if another owner exists in the same workspace. Owners in other workspaces do not satisfy this rule. The sole owner can still promote or change other members and retain their own owner role.
 
-Missing authentication returns `401`; a missing workspace or requester who is not a member gets `404`. Editor/viewer requesters get `403` with `You do not have permission to change member roles in this workspace`, including when requesting the target's current role. A target who is not a workspace member gets `404`. Demoting the last owner returns `409`. Missing or invalid roles and non-integer user IDs return `422`.
+Missing authentication returns `401`; a missing workspace or requester who is not a member gets `404`. Editor/viewer requesters get `403` with `You do not have permission to perform this action`, including when requesting the target's current role. A target who is not a workspace member gets `404` with `User is not a member of the workspace`. Demoting the last owner returns `409`. Missing or invalid roles and non-integer user IDs return `422`.
 
 ### Concurrent membership changes
 
-Both the add-member and role-update services lock the workspace row using `SELECT ... FOR UPDATE` before checking permissions and membership. Changes to the same workspace wait for the current transaction; changes to different workspaces do not contend for that workspace row lock. The role-update service checks for another owner while holding this lock, before changing the target role.
+The add-member, role-update, and removal services lock the workspace row using `SELECT ... FOR UPDATE` before checking permissions. Changes to the same workspace wait for the current transaction; changes to different workspaces do not contend for that workspace row lock. Role changes and owner self-removal check for another owner while holding this lock.
 
 A same-role request also acquires the workspace lock, but returns without committing. Its lock remains held until the request's database session closes and ends the transaction. Callers using the service outside the HTTP request lifecycle must end or close their session themselves.
 
@@ -266,7 +285,7 @@ When two owners add the same person concurrently, one succeeds and the other rec
 
 Commit releases the lock on success. On failure, including permission or lookup errors after locking, the service rolls back to release the lock. If PostgreSQL reports uniqueness error `23505` for table `workspace_members` and constraint `workspace_members_workspace_id_user_id_key`, the service translates that `IntegrityError` into `ExistingMemberError`, preserving the original error as its cause. The router returns `409`, just as it does for duplicates detected by the initial membership check. This is a fallback for writers that bypass the locking convention; the unique constraint remains the final safeguard.
 
-Other database errors, including primary-key, foreign-key, and role-check violations, propagate after rollback rather than being mislabeled as duplicate membership. The constraint name in the handler must match the database constraint; update the handler if a migration renames it. Future membership removal operations must follow the same workspace-locking convention and preserve the last owner. Last-owner protection is enforced by these service methods, not by a database constraint on direct writes.
+Other database errors, including primary-key, foreign-key, and role-check violations, propagate after rollback rather than being mislabeled as duplicate membership. The constraint name in the handler must match the database constraint; update the handler if a migration renames it. Last-owner protection is enforced by these service methods, not by a database constraint on direct writes.
 
 ### Swagger authorization
 
@@ -320,6 +339,7 @@ The suite covers:
 - Workspace authentication failures, membership-filtered listing, empty lists returning `200`, and retrieval by owners, editors, and viewers.
 - Workspace and membership database constraints against both model-created and Alembic-created tables.
 - Member listing, owner-only additions, payload validation, duplicate membership, and missing users or workspaces.
+- Shared error response messages, owner-only member removal and self-removal, empty `204` responses, persisted deletion preserving user accounts, and concurrent self-removals preserving the last owner.
 - Role updates, unchanged-role requests issuing no writes or commits, promotions, allowed self-demotion with another owner, and last-owner rejection returning `409` scoped to the workspace.
 - Concurrent self-demotions preserving one owner, additions rechecking permissions after a demotion, and last-owner rejection releasing its lock.
 - Non-members receiving `404`, non-owner members receiving `403` on additions, and complete member response fields.

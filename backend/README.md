@@ -256,7 +256,7 @@ Whenever the target membership has the owner role, the service checks that anoth
 
 Deletion checks the workspace and the requester's membership before looking up the target membership. A missing workspace or non-member requester returns `404` with `Workspace not found`, whether the target is a member, a registered non-member, or an unknown user. This also applies to a non-member attempting to leave through `/members/me` or their own user ID.
 
-Known issue: for an authorized owner deleting a missing target membership, the intended response is `404` with `User is not a member of the workspace`. The current service accesses `member_to_delete.user_id` before checking for `None`, causing `500` instead. The regression test retains the expected `404` response to expose this issue.
+Once the requester is confirmed to be a member, a missing target membership returns `404` with `User is not a member of the workspace`. This check happens before the owner check for removing someone else, so owners, editors, and viewers receive that same `404` for a missing target. If the target exists and is someone else, editors and viewers receive `403`. The missing-target check applies both to registered users outside the workspace and to unknown user IDs.
 
 ### Shared membership errors
 

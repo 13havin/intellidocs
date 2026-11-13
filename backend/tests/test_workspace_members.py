@@ -177,6 +177,22 @@ def test_target_non_member_uses_shared_handler(member_client, db_session, member
     assert membership_ids(db_session) == before
 
 
+@pytest.mark.parametrize("actor", ["owner", "editor", "viewer"])
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_removing_missing_membership_returns_404_for_members(
+    member_client, db_session, member_context, actor, target_exists
+):
+    workspace, users = member_context
+    target_id = users["outsider"].id if target_exists else -1
+    before = membership_ids(db_session)
+    response = member_client.delete(
+        f"{endpoint(workspace.id)}/{target_id}", headers=headers(users[actor]),
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "User is not a member of the workspace"}
+    assert membership_ids(db_session) == before
+
+
 @pytest.mark.parametrize("suffix", ["me", "-1"])
 def test_removal_requires_authentication(member_client, member_context, suffix):
     workspace, _ = member_context

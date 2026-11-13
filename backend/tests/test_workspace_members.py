@@ -147,7 +147,20 @@ def test_non_member_cannot_leave_workspace(member_client, db_session, member_con
         headers=headers(users["outsider"]),
     )
     assert response.status_code == 404
-    assert response.json() == {"detail": "User is not a member of the workspace"}
+    assert response.json() == {"detail": "Workspace not found"}
+    assert membership_ids(db_session) == before
+
+
+@pytest.mark.parametrize("target", ["owner", "target", "unknown"])
+def test_non_member_removal_hides_target_membership(member_client, db_session, member_context, target):
+    workspace, users = member_context
+    before = membership_ids(db_session)
+    target_id = -1 if target == "unknown" else users[target].id
+    response = member_client.delete(
+        f"{endpoint(workspace.id)}/{target_id}", headers=headers(users["outsider"]),
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Workspace not found"}
     assert membership_ids(db_session) == before
 
 

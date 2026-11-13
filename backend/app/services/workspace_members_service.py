@@ -147,16 +147,19 @@ def delete_workspace_member(db: Session, workspace_id: int, user_id: int, curren
     try:
         get_locked_workspace(db, workspace_id)
                 
-        member_to_delete = get_workspace_member(db, workspace_id, user_id)
+        current_membership = get_workspace_member(db, workspace_id, current_user_id)
+        if not current_membership:
+            raise NotFoundError()
         
-        if not member_to_delete:
-            raise UserNotMemberError()
+        member_to_delete = get_workspace_member(db, workspace_id, user_id)
         
         if member_to_delete.user_id != current_user_id:
             check_workspace_ownership(db, workspace_id, current_user_id)
+            
+        if not member_to_delete:
+            raise UserNotMemberError()
         
         if member_to_delete.role == RoleEnum.owner:
-            # Check if the current user is the last owner of the workspace
             require_another_owner(db, workspace_id, member_to_delete.user_id)
             
         db.delete(member_to_delete)

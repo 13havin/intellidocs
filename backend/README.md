@@ -254,7 +254,9 @@ Any member can remove their own membership through `/members/me` or by using the
 
 Whenever the target membership has the owner role, the service checks that another owner remains, regardless of who initiated the deletion. Removing the last owner is rejected with `409`. Owners in another workspace do not satisfy this rule. Concurrent owner self-removals are serialized so one owner remains.
 
-Deletion checks the workspace and target membership before authorizing removal of someone else. A missing workspace returns `404` with `Workspace not found`; a missing target membership returns `404` with `User is not a member of the workspace`, including a non-member attempting to leave. If the target exists but the requester is not a member, the response is `404` with `Workspace not found`.
+Deletion checks the workspace and the requester's membership before looking up the target membership. A missing workspace or non-member requester returns `404` with `Workspace not found`, whether the target is a member, a registered non-member, or an unknown user. This also applies to a non-member attempting to leave through `/members/me` or their own user ID.
+
+Known issue: for an authorized owner deleting a missing target membership, the intended response is `404` with `User is not a member of the workspace`. The current service accesses `member_to_delete.user_id` before checking for `None`, causing `500` instead. The regression test retains the expected `404` response to expose this issue.
 
 ### Shared membership errors
 

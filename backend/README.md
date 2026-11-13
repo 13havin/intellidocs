@@ -250,7 +250,11 @@ For a valid add request, the requester's membership and owner role are checked b
 
 `DELETE /api/v1/workspaces/{workspace_id}/members/{user_id}` removes a membership. `DELETE /api/v1/workspaces/{workspace_id}/members/me` removes the authenticated user's own membership. Both return `204` with no response body on success and preserve the user account and workspace.
 
-Both endpoints currently require the requester to be an owner. Editors and viewers cannot remove other members or leave using `/members/me`; they receive `403`. An owner can remove another member, including another owner, or leave if another owner remains. Removing the last owner is rejected with `409`. Concurrent owner self-removals are serialized so one owner remains.
+Any member can remove their own membership through `/members/me` or by using their own user ID. Editors and viewers can leave without owner permission, but cannot remove someone else (`403`). Removing another member requires the requester to be an owner. An owner can remove another owner or leave if another owner remains in the same workspace.
+
+Whenever the target membership has the owner role, the service checks that another owner remains, regardless of who initiated the deletion. Removing the last owner is rejected with `409`. Owners in another workspace do not satisfy this rule. Concurrent owner self-removals are serialized so one owner remains.
+
+Deletion checks the workspace and target membership before authorizing removal of someone else. A missing workspace returns `404` with `Workspace not found`; a missing target membership returns `404` with `User is not a member of the workspace`, including a non-member attempting to leave. If the target exists but the requester is not a member, the response is `404` with `Workspace not found`.
 
 ### Shared membership errors
 
@@ -275,7 +279,7 @@ Missing authentication returns `401`; a missing workspace or requester who is no
 
 ### Concurrent membership changes
 
-The add-member, role-update, and removal services lock the workspace row using `SELECT ... FOR UPDATE` before checking permissions. Changes to the same workspace wait for the current transaction; changes to different workspaces do not contend for that workspace row lock. Role changes and owner self-removal check for another owner while holding this lock.
+The add-member, role-update, and removal services lock the workspace row using `SELECT ... FOR UPDATE` before checking permissions. Changes to the same workspace wait for the current transaction; changes to different workspaces do not contend for that workspace row lock. Owner demotion and deletion of any owner membership check for another owner while holding this lock.
 
 A same-role request also acquires the workspace lock, but returns without committing. Its lock remains held until the request's database session closes and ends the transaction. Callers using the service outside the HTTP request lifecycle must end or close their session themselves.
 
@@ -339,7 +343,7 @@ The suite covers:
 - Workspace authentication failures, membership-filtered listing, empty lists returning `200`, and retrieval by owners, editors, and viewers.
 - Workspace and membership database constraints against both model-created and Alembic-created tables.
 - Member listing, owner-only additions, payload validation, duplicate membership, and missing users or workspaces.
-- Shared error response messages, owner-only member removal and self-removal, empty `204` responses, persisted deletion preserving user accounts, and concurrent self-removals preserving the last owner.
+- Shared error response messages, owner-only removal of other members, self-removal by owners/editors/viewers, empty `204` responses, persisted deletion preserving user accounts, and concurrent self-removals preserving the last owner.
 - Role updates, unchanged-role requests issuing no writes or commits, promotions, allowed self-demotion with another owner, and last-owner rejection returning `409` scoped to the workspace.
 - Concurrent self-demotions preserving one owner, additions rechecking permissions after a demotion, and last-owner rejection releasing its lock.
 - Non-members receiving `404`, non-owner members receiving `403` on additions, and complete member response fields.

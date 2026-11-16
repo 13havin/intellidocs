@@ -32,6 +32,61 @@ def add_document(db, workspace_id, uploaded_by, **overrides):
     return db.execute(insert(Document.__table__).values(**values).returning(Document.id)).scalar_one()
 
 
+@pytest.mark.parametrize("file_type", ["docx", "PDF", "", " pdf ", "png"])
+def test_invalid_file_types_rejected(workspace_session, document_parents, file_type):
+    db = workspace_session
+    users, workspaces = document_parents
+    with pytest.raises(IntegrityError) as error:
+        with db.begin_nested():
+            add_document(db, workspaces[0], users[0], file_type=file_type)
+    assert error.value.orig.pgcode == "23514"
+    assert error.value.orig.diag.constraint_name == "ck_file_type"
+    assert db.scalars(select(Document.id)).all() == []
+
+
+@pytest.mark.parametrize("file_size", [0, -1, -1024])
+def test_nonpositive_file_sizes_rejected(workspace_session, document_parents, file_size):
+    db = workspace_session
+    users, workspaces = document_parents
+    with pytest.raises(IntegrityError) as error:
+        with db.begin_nested():
+            add_document(db, workspaces[0], users[0], file_size=file_size)
+    assert error.value.orig.pgcode == "23514"
+    assert error.value.orig.diag.constraint_name == "ck_file_size"
+    assert db.scalars(select(Document.id)).all() == []
+
+
+@pytest.mark.parametrize("field", ["workspace_id", "uploaded_by"])
+def test_nonexistent_document_references_rejected(workspace_session, document_parents, field):
+    db = workspace_session
+    users, workspaces = document_parents
+    workspace_id = -1 if field == "workspace_id" else workspaces[0]
+    uploaded_by = -1 if field == "uploaded_by" else users[0]
+    with pytest.raises(IntegrityError) as error:
+        with db.begin_nested():
+            add_document(db, workspace_id, uploaded_by)
+    assert error.value.orig.pgcode == "23503"
+    assert error.value.orig.diag.constraint_name == f"documents_{field}_fkey"
+    assert db.scalars(select(Document.id)).all() == []
+
+
+@pytest.mark.parametrize("file_type", ["pdf", "txt", "md"])
+def test_supported_types_and_minimum_size_allowed(workspace_session, document_parents, file_type):
+    db = workspace_session
+    users, workspaces = document_parents
+    document_id = add_document(db, workspaces[0], users[0], file_type=file_type, file_size=1)
+    row = db.execute(select(Document.file_type, Document.file_size).where(Document.id == document_id)).one()
+    assert tuple(row) == (file_type, 1)
+
+
+def test_null_uploader_allowed(workspace_session, document_parents):
+    db = workspace_session
+    _, workspaces = document_parents
+    document_id = add_document(db, workspaces[0], None)
+    row = db.execute(select(Document.id, Document.uploaded_by).where(Document.id == document_id)).one()
+    assert tuple(row) == (document_id, None)
+
+
 @pytest.mark.parametrize("same_workspace", [True, False])
 def test_duplicate_original_filenames_allowed(workspace_session, document_parents, same_workspace):
     db = workspace_session

@@ -12,8 +12,8 @@ class WorkspaceMember(Base):
     workspace_id = Column(BIGINT, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(BIGINT, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(VARCHAR(50), nullable=False)
-    joined_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
-    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
+    joined_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
     user = relationship("User", back_populates="workspace_members")
     workspace = relationship("Workspace", back_populates="workspace_members")

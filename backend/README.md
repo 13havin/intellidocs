@@ -124,6 +124,25 @@ If the database is at the second migration, `downgrade -1` returns it to the fir
 
 Deleting a migration file does not remove its database changes. If a database already contains `users` but has no matching migration history, the initial migration will try to create the table again. Use a fresh database to test the initial migration, or reconcile the existing schema and migration history before upgrading. `stamp head` only updates the recorded revision; it does not create or repair tables.
 
+## Document metadata
+
+Migration `fd5be31634f2` creates the `documents` table. Apply it with `python -m alembic upgrade head` from `backend/`. The schema stores metadata; document upload, download, and storage-management endpoints are not implemented yet.
+
+| Field | Behavior |
+| --- | --- |
+| `id` | Generated bigint document ID |
+| `name` | Required original filename, up to 255 characters; duplicates are allowed, including within one workspace |
+| `storage_key` | Required storage identifier, up to 255 characters; unique across all workspaces |
+| `file_type` | One of `pdf`, `txt`, or `md` |
+| `file_size` | Required positive bigint |
+| `workspace_id` | Required, indexed workspace reference; workspace deletion cascades to document metadata |
+| `uploaded_by` | Nullable user reference; user deletion sets this field to `NULL` and preserves the document |
+| `created_at` | Required timestamp with a database default |
+
+The uploader column is named `uploaded_by`, not `uploaded_user_id`. Both direct database deletion and SQLAlchemy ORM deletion preserve this behavior. The user-to-documents relationship does not cascade document deletion; the workspace-to-documents relationship does.
+
+Database cascades affect metadata rows only. They do not delete files from external storage; file cleanup will need to be handled by the future storage implementation.
+
 ## API
 
 Documentation is available while the server is running:
@@ -344,6 +363,7 @@ The suite covers:
 - Workspace creation from JSON, required and invalid names, 1- and 255-character boundaries (including Unicode), rejection of overlong names, persisted owner membership, and rollback on membership failure.
 - Workspace authentication failures, membership-filtered listing, empty lists returning `200`, and retrieval by owners, editors, and viewers.
 - Workspace and membership database constraints against both model-created and Alembic-created tables.
+- Document filename duplicates, globally unique storage keys, workspace deletion cascading to metadata, and user deletion preserving documents with a null uploader. These run against both model-created and Alembic-created tables, with direct SQL and ORM deletion (loaded and unloaded relationships).
 - Member listing, owner-only additions, payload validation, duplicate membership, and missing users or workspaces.
 - Shared error response messages, owner-only removal of other members, self-removal by owners/editors/viewers, empty `204` responses, persisted deletion preserving user accounts, and concurrent self-removals preserving the last owner.
 - Role updates, unchanged-role requests issuing no writes or commits, promotions, allowed self-demotion with another owner, and last-owner rejection returning `409` scoped to the workspace.
@@ -360,9 +380,10 @@ python -m pytest tests/test_users.py -v
 python -m pytest tests/test_workspaces.py -v
 python -m pytest tests/test_workspace_members.py -v
 python -m pytest tests/test_workspace_member_concurrency.py -v
+python -m pytest tests/test_document_constraints.py -v
 ```
 
-Repeat runs do not require a manual database reset. API tests run against model-created tables. The workspace constraint tests also apply the Alembic migration chain in a separate temporary `pytest_migrations_<uuid>` schema and verify constraints there. The duplicate-email test does not simulate simultaneous requests. If pytest is forcibly terminated before teardown, its temporary schemas may remain.
+Repeat runs do not require a manual database reset. API tests run against model-created tables. The workspace and document constraint tests also apply the Alembic migration chain in temporary `pytest_migrations_<uuid>` schemas and verify constraints there. The duplicate-email test does not simulate simultaneous requests. If pytest is forcibly terminated before teardown, its temporary schemas may remain.
 
 ## Project structure
 
@@ -381,7 +402,7 @@ backend/
 |   |   |-- security.py        # Password hashing and verification
 |   |   `-- tokens.py          # JWT creation/validation and OAuth2 bearer scheme
 |   |-- db/database.py         # SQLAlchemy engine, session factory, and Base
-|   |-- models/                # User, workspace, and workspace membership models
+|   |-- models/                # User, workspace, membership, and document metadata models
 |   |-- routers/               # Auth, profile, workspace, health, and metadata endpoints
 |   |-- schemas/
 |   |   |-- auth.py            # Login, token response, and token data schemas
@@ -401,6 +422,7 @@ backend/
 |   |-- test_users.py          # Protected-profile authentication failures
 |   |-- test_workspaces.py     # Workspace API validation, access, and persistence
 |   |-- test_workspace_constraints.py # Model and migration database constraints
+|   |-- test_document_constraints.py # Filename/storage uniqueness and document deletion rules
 |   |-- test_workspace_members.py # Member API permissions, responses, and validation
 |   |-- test_workspace_member_concurrency.py # PostgreSQL locking across connections
 |   |-- test_health.py
@@ -414,4 +436,4 @@ Routes handle request parsing and HTTP responses. The auth service coordinates p
 
 ## Planned capabilities
 
-Document management, search, and AI-powered document analysis remain planned capabilities.
+Document upload/download and file storage management, search, and AI-powered document analysis remain planned capabilities. The document metadata model and migration are implemented.

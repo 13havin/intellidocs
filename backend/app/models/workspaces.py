@@ -8,4 +8,6 @@ class Workspace(Base):
     name = Column(VARCHAR(255), nullable=False)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
+    
     workspace_members = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
+    documents = relationship("Document", back_populates="workspace", cascade="all, delete-orphan")

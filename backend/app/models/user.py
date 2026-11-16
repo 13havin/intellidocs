@@ -9,4 +9,6 @@ class User(Base):
     email = Column(VARCHAR(255), unique=True, nullable=False, index=True)
     password = Column(String, nullable=False)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    
     workspace_members = relationship("WorkspaceMember", back_populates="user", cascade="all, delete-orphan")
+    documents = relationship("Document", back_populates="user", passive_deletes=True)

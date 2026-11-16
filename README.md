@@ -4,4 +4,6 @@ IntelliDocs is a document and research workspace currently under active developm
 
 Owners can add registered users to a workspace as owners, editors, or viewers, update member roles, and remove other members. Any member can leave their workspace, but the last owner cannot be demoted or removed. Members can list their workspace's members. Concurrent additions, role updates, and removals are serialized per workspace using PostgreSQL row locks.
 
-See the [backend README](backend/README.md) for setup, database migrations, registration, login, bearer-token authentication, workspace and member API examples, and tests.
+Document metadata now has a model and Alembic migration. Original filenames may repeat, storage keys are globally unique, workspace deletion removes document metadata, and user deletion preserves it with a null uploader. Document upload/download endpoints and file storage management remain planned.
+
+See the [backend README](backend/README.md) for setup, database migrations, registration, login, bearer-token authentication, workspace and member API examples, document metadata, and tests.

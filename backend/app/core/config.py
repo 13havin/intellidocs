@@ -8,6 +8,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
+STORAGE_ROOT = os.getenv("STORAGE_ROOT")
     
 def validate_env_vars():
     '''Validate that the required environment variables are set.
@@ -15,6 +16,7 @@ def validate_env_vars():
     validate_database_url(DATABASE_URL)
     validate_secret_key(SECRET_KEY)
     validate_algorithm(ALGORITHM)
+    validate_storage_root(STORAGE_ROOT)
     
 def validate_database_url(DATABASE_URL: str):
     if not DATABASE_URL or not DATABASE_URL.strip():
@@ -49,3 +51,16 @@ def validate_algorithm(ALGORITHM: str):
     
     if ALGORITHM != "HS256":
         raise ValueError("ALGORITHM must be set to 'HS256'.")
+    
+def validate_storage_root(STORAGE_ROOT: str):
+    if not STORAGE_ROOT or not STORAGE_ROOT.strip():
+        raise ValueError("STORAGE_ROOT is not set in the environment.")
+    
+    if not os.path.isabs(STORAGE_ROOT):
+        raise ValueError("STORAGE_ROOT must be an absolute path.")
+    
+    if not os.path.exists(STORAGE_ROOT):
+        raise ValueError(f"STORAGE_ROOT path '{STORAGE_ROOT}' does not exist.")
+    
+    if not os.path.isdir(STORAGE_ROOT):
+        raise ValueError(f"STORAGE_ROOT path '{STORAGE_ROOT}' is not a directory.")

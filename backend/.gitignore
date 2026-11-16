@@ -5,3 +5,4 @@
 app/*/__pycache__/
 alembic/*/__pycache__/
 ../.vscode
+intellidocs-storage/*

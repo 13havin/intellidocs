@@ -1,14 +1,23 @@
 from pathlib import Path
 from uuid import uuid4
 from typing import BinaryIO
-import codecs, re
+import codecs, re, logging, os
+from tempfile import NamedTemporaryFile
+
+logger = logging.getLogger(__name__)
 
 class LocalStorageService:
     def __init__(self, root: Path):
+        if not root.is_absolute():
+            raise ValueError("Storage root must be an absolute path.")
+        
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         
     def prepare_destination_path(self, workspace_id: int, extension: str) -> tuple[str, Path]:
+        if workspace_id <= 0:
+            raise ValueError("Workspace ID must be a positive integer.")
+        
         extension = extension.lower().lstrip(".")
         if extension not in {"pdf", "txt", "md"}:
             raise ValueError(f"Unsupported file extension: {extension}")
@@ -31,7 +40,7 @@ class LocalStorageService:
         key, destination_path = self.prepare_destination_path(workspace_id, extension)
         
         total_size = 0
-        created = False
+        temporary_path = None
         
         extension = extension.lower().lstrip(".")
         
@@ -44,8 +53,16 @@ class LocalStorageService:
         pdf_header = bytearray()
         
         try:
-            with destination_path.open("xb") as output:
-                created = True
+            # Keep incomplete data under a private temporary name on the same
+            # filesystem as the destination. Close it before publishing.
+            with NamedTemporaryFile(
+                mode="wb",
+                dir=destination_path.parent,
+                prefix=".upload-",
+                suffix=".tmp",
+                delete=False,
+            ) as output:
+                temporary_path = Path(output.name)
                 
                 while chunk := stream.read(64 * 1024):
                     total_size += len(chunk)
@@ -77,10 +94,17 @@ class LocalStorageService:
                 if extension == "pdf" and bytes(pdf_header) != b"%PDF-":
                     raise ValueError("File does not have the expected PDF header")
                 
-        except Exception:
-            if created:
-                destination_path.unlink(missing_ok=True)
-            raise
+            # Creating a hard link publishes the complete file without
+            # overwriting an existing destination. Do not replace on failure.
+            os.link(temporary_path, destination_path)
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    # Preserve the original failure, or a successful publish;
+                    # cleanup failure must not make callers retry a saved file.
+                    logger.exception("Could not remove temporary upload file: %s", temporary_path)
         
         return key, total_size
     

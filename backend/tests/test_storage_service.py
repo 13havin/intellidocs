@@ -1,6 +1,8 @@
 """Filesystem tests use temporary directories, never the configured storage root."""
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from uuid import UUID
 
 import pytest
@@ -133,6 +135,77 @@ def test_uuid_collision_never_overwrites_or_deletes_existing_file(storage, monke
         storage.save(BytesIO(b"replacement"), 1, "txt", 100)
     assert storage.resolve_storage_key(key).read_bytes() == b"original"
     assert len(files(storage)) == 1
+
+
+def test_failed_publication_removes_temporary_file(storage, monkeypatch):
+    failure = PermissionError("Publishing denied")
+    attempted = []
+
+    def fail_publish(source, destination):
+        source, destination = Path(source), Path(destination)
+        assert source.parent == destination.parent
+        assert source.read_bytes() == b"complete contents"
+        assert not destination.exists()
+        attempted.append((source, destination))
+        raise failure
+
+    monkeypatch.setattr(storage_service.os, "link", fail_publish)
+    with pytest.raises(PermissionError) as error:
+        storage.save(BytesIO(b"complete contents"), 1, "txt", 100)
+    assert error.value is failure
+    assert len(attempted) == 1
+    assert not attempted[0][0].exists()
+    assert not attempted[0][1].exists()
+    assert files(storage) == []
+
+
+def test_final_name_appears_only_after_writing_finishes(storage, monkeypatch):
+    fixed_uuid = UUID("12345678-1234-4234-8234-123456789abc")
+    monkeypatch.setattr(storage_service, "uuid4", lambda: fixed_uuid)
+    destination = storage.root / "1" / f"{fixed_uuid.hex}.txt"
+    content = b"a" * (64 * 1024 + 1)
+
+    class ObservedStream(BytesIO):
+        def read(self, size=-1):
+            assert not destination.exists()
+            temporary_files = list(destination.parent.glob(".upload-*.tmp"))
+            assert len(temporary_files) == 1
+            return super().read(size)
+
+    key, size = storage.save(ObservedStream(content), 1, "txt", len(content))
+    assert size == len(content)
+    assert storage.resolve_storage_key(key) == destination
+    assert destination.read_bytes() == content
+    assert files(storage) == [destination]
+
+
+def test_concurrent_publication_collision_preserves_winning_file(storage, monkeypatch):
+    fixed_uuid = UUID("12345678-1234-4234-8234-123456789abc")
+    monkeypatch.setattr(storage_service, "uuid4", lambda: fixed_uuid)
+    real_link = storage_service.os.link
+    ready = Barrier(2, timeout=5)
+
+    def simultaneous_publish(source, destination):
+        ready.wait()
+        return real_link(source, destination)
+
+    monkeypatch.setattr(storage_service.os, "link", simultaneous_publish)
+
+    def save(content):
+        try:
+            key, _ = storage.save(BytesIO(content), 1, "txt", 100)
+            return key, content
+        except FileExistsError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, [b"first writer", b"second writer"]))
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    key, content = winners[0]
+    destination = storage.resolve_storage_key(key)
+    assert destination.read_bytes() == content
+    assert files(storage) == [destination]
 
 
 @pytest.mark.parametrize("key", [
